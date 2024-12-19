@@ -1,11 +1,12 @@
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace TemporalStasis;
 
 public static class StructExtensions {
     public static T ReadStruct<T>(this Stream stream) where T : struct {
-        var buffer = stream.ReadBytes(Marshal.SizeOf<T>());
+        var buffer = stream.ReadBytes(Unsafe.SizeOf<T>());
         return buffer.ReadStruct<T>();
     }
     
@@ -18,12 +19,12 @@ public static class StructExtensions {
     }
 
     public static async Task<T> ReadStructAsync<T>(this Stream stream) where T : struct {
-        var buffer = await stream.ReadBytesAsync(Marshal.SizeOf<T>());
+        var buffer = await stream.ReadBytesAsync(Unsafe.SizeOf<T>());
         return buffer.ReadStruct<T>();
     }
 
     public static void WriteStruct<T>(this Stream stream, T @struct) where T : struct {
-        var size = Marshal.SizeOf<T>();
+        var size = Unsafe.SizeOf<T>();
         var buffer = new byte[size];
         buffer.WriteStruct(@struct);
         stream.WriteBytes(buffer);
@@ -36,7 +37,7 @@ public static class StructExtensions {
     }
 
     public static async Task WriteStructAsync<T>(this Stream stream, T @struct) where T : struct {
-        var size = Marshal.SizeOf<T>();
+        var size = Unsafe.SizeOf<T>();
         var buffer = new byte[size];
         buffer.WriteStruct(@struct);
         await stream.WriteBytesAsync(buffer);

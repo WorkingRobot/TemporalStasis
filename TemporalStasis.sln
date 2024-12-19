@@ -1,8 +1,13 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TemporalStasis", "TemporalStasis\TemporalStasis.csproj", "{1ABCC4F9-0FAB-4CF0-B557-3BC5245933A8}"
+# Visual Studio Version 17
+VisualStudioVersion = 17.10.35013.160
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TemporalStasis", "TemporalStasis\TemporalStasis.csproj", "{1ABCC4F9-0FAB-4CF0-B557-3BC5245933A8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TemporalStasis.Example", "TemporalStasis.Example\TemporalStasis.Example.csproj", "{D6AD8D26-70EE-4440-8255-0452E4DA2C4E}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TemporalStasis.Example", "TemporalStasis.Example\TemporalStasis.Example.csproj", "{D6AD8D26-70EE-4440-8255-0452E4DA2C4E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TemporalStasis.Connector", "TemporalStasis.Connector\TemporalStasis.Connector.csproj", "{C5D1D6CB-D5AA-48C5-BF58-26A26415D02F}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -18,5 +23,15 @@ Global
 		{D6AD8D26-70EE-4440-8255-0452E4DA2C4E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D6AD8D26-70EE-4440-8255-0452E4DA2C4E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D6AD8D26-70EE-4440-8255-0452E4DA2C4E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C5D1D6CB-D5AA-48C5-BF58-26A26415D02F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C5D1D6CB-D5AA-48C5-BF58-26A26415D02F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C5D1D6CB-D5AA-48C5-BF58-26A26415D02F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C5D1D6CB-D5AA-48C5-BF58-26A26415D02F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {71DA669C-236F-4767-959E-70A4FD12B11C}
 	EndGlobalSection
 EndGlobal

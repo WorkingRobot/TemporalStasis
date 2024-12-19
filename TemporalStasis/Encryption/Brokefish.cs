@@ -1,11 +1,14 @@
-#pragma warning disable CS0675 // Bitwise-or operator used on a sign-extended operand
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
 namespace TemporalStasis.Encryption;
 
 // https://github.com/SapphireServer/ffxivmon/blob/master/FFXIVMonReborn/LobbyEncryption/Blowfish.cs
-public class Brokefish {
+public class Brokefish
+{
     private const int N = 16;
-    private uint[] p = new uint[16 + 2];
-    private uint[,] s = new uint[4, 256];
+    private readonly uint[] p = new uint[N + 2];
+    private readonly uint[,] s = new uint[4, 256];
 
     #region P and S Values
 
@@ -278,114 +281,104 @@ public class Brokefish {
 
     #endregion
 
-    public Brokefish(byte[] key) {
-        this.InitializeBlowfish(key);
+    public Brokefish(byte[] key)
+    {
+        InitializeBlowfish(key);
     }
 
-    public void Encipher(byte[] data, int offset, int length) {
-        if ((length - offset) % 8 != 0)
-            throw new ArgumentException("Needs to be a multiple of 8");
-
-        for (var i = offset; i < offset + length; i += 8) {
-            var xl = (uint) (data[i + 0] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24));
-            var xr = (uint) (data[i + 4] | (data[i + 5] << 8) | (data[i + 6] << 16) | (data[i + 7] << 24));
-            this.BlowfishEncipher(ref xl, ref xr);
-            data[i + 0] = (byte) (xl >> 0);
-            data[i + 1] = (byte) (xl >> 8);
-            data[i + 2] = (byte) (xl >> 16);
-            data[i + 3] = (byte) (xl >> 24);
-            data[i + 4] = (byte) (xr >> 0);
-            data[i + 5] = (byte) (xr >> 8);
-            data[i + 6] = (byte) (xr >> 16);
-            data[i + 7] = (byte) (xr >> 24);
-        }
+    [StructLayout(LayoutKind.Explicit, Pack = 8, Size = 8)]
+    private struct Split64
+    {
+        [FieldOffset(0)]
+        public uint L;
+        [FieldOffset(4)]
+        public uint R;
     }
 
-    public void Decipher(byte[] data, int offset, int length) {
-        if ((length - offset) % 8 != 0)
-            throw new ArgumentException("Needs to be a multiple of 8");
-
-        for (var i = offset; i < offset + length; i += 8) {
-            var xl = (uint) (data[i + 0] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24));
-            var xr = (uint) (data[i + 4] | (data[i + 5] << 8) | (data[i + 6] << 16) | (data[i + 7] << 24));
-            this.BlowfishDecipher(ref xl, ref xr);
-            data[i + 0] = (byte) (xl >> 0);
-            data[i + 1] = (byte) (xl >> 8);
-            data[i + 2] = (byte) (xl >> 16);
-            data[i + 3] = (byte) (xl >> 24);
-            data[i + 4] = (byte) (xr >> 0);
-            data[i + 5] = (byte) (xr >> 8);
-            data[i + 6] = (byte) (xr >> 16);
-            data[i + 7] = (byte) (xr >> 24);
-        }
+    [StructLayout(LayoutKind.Explicit, Pack = 4, Size = 4)]
+    private readonly struct Split32(uint data)
+    {
+        [FieldOffset(0)]
+        public readonly byte A;
+        [FieldOffset(1)]
+        public readonly byte B;
+        [FieldOffset(2)]
+        public readonly byte C;
+        [FieldOffset(3)]
+        public readonly byte D;
+        [FieldOffset(0)]
+        public readonly uint Data = data;
     }
 
-    private uint F(uint x) {
-        ushort a;
-        ushort b;
-        ushort c;
-        ushort d;
-        uint y;
+    public void EncipherPadded(Span<byte> data) =>
+        Encipher(data[..(data.Length & -32)]);
 
-        d = (ushort) (x & 0x00FF);
-        x >>= 8;
-        c = (ushort) (x & 0x00FF);
-        x >>= 8;
-        b = (ushort) (x & 0x00FF);
-        x >>= 8;
-        a = (ushort) (x & 0x00FF);
-        y = this.s[0, a] + this.s[1, b];
-        y = y ^ this.s[2, c];
-        y = y + this.s[3, d];
+    // sub_141B1BC40
+    public void DecipherPadded(Span<byte> data) =>
+        Decipher(data[..(data.Length & -32)]);
 
-        return y;
+    public void Encipher(Span<byte> data)
+    {
+        // Extra data at the end is left untouched
+        foreach (ref var chunk in MemoryMarshal.Cast<byte, Split64>(data))
+            BlowfishEncipher(ref chunk.L, ref chunk.R);
     }
 
-    private void BlowfishEncipher(ref uint xl, ref uint xr) {
-        uint temp;
+    public void Decipher(Span<byte> data)
+    {
+        // Extra data at the end is left untouched
+        var dataBlock = MemoryMarshal.Cast<byte, Split64>(data);
+        foreach (ref var chunk in dataBlock)
+            BlowfishDecipher(ref chunk.L, ref chunk.R);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    private uint F(uint x)
+    {
+        var X = new Split32(x);
+        return ((s[0, X.D] + s[1, X.C]) ^ (s[2, X.B])) + s[3, X.A];
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    private void BlowfishEncipher(ref uint xl, ref uint xr)
+    {
         int i;
 
-        for (i = 0; i < N; ++i) {
-            xl = xl ^ this.p[i];
-            xr = this.F(xl) ^ xr;
+        for (i = 0; i < N; ++i)
+        {
+            xl ^= p[i];
+            xr = F(xl) ^ xr;
 
-            temp = xl;
-            xl = xr;
-            xr = temp;
+            (xl, xr) = (xr, xl);
         }
 
-        temp = xl;
-        xl = xr;
-        xr = temp;
+        (xl, xr) = (xr, xl);
 
-        xr = xr ^ this.p[N];
-        xl = xl ^ this.p[N + 1];
+        xr ^= p[N];
+        xl ^= p[N + 1];
     }
 
-    private void BlowfishDecipher(ref uint xl, ref uint xr) {
-        uint temp;
+    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    private void BlowfishDecipher(ref uint xl, ref uint xr)
+    {
         int i;
 
-        for (i = N + 1; i > 1; --i) {
-            xl = xl ^ this.p[i];
-            xr = this.F(xl) ^ xr;
+        for (i = N + 1; i > 1; --i)
+        {
+            xl ^= p[i];
+            xr = F(xl) ^ xr;
 
-            /* ExChange xl and xr */
-            temp = xl;
-            xl = xr;
-            xr = temp;
+            (xl, xr) = (xr, xl);
         }
 
-        /* ExChange xl and xr */
-        temp = xl;
-        xl = xr;
-        xr = temp;
+        (xl, xr) = (xr, xl);
 
-        xr = xr ^ this.p[1];
-        xl = xl ^ this.p[0];
+        xl ^= p[0];
+        xr ^= p[1];
     }
 
-    private int InitializeBlowfish(byte[] key) {
+    private void InitializeBlowfish(byte[] key)
+    {
         short i;
         short j;
         short k;
@@ -394,40 +387,44 @@ public class Brokefish {
         uint datal;
         uint datar;
 
-        Buffer.BlockCopy(PValues, 0, this.p, 0, PValues.Length);
-        Buffer.BlockCopy(SValues, 0, this.s, 0, SValues.Length);
+        Buffer.BlockCopy(PValues, 0, p, 0, PValues.Length);
+        Buffer.BlockCopy(SValues, 0, s, 0, SValues.Length);
 
         j = 0;
-        for (i = 0; i < N + 2; ++i) {
+        for (i = 0; i < N + 2; ++i)
+        {
             data = 0x00000000;
-            for (k = 0; k < 4; ++k) {
-                data = (data << 8) | (SByte) key[j];
-                j = (short) (j + 1);
-                if (j >= key.Length) {
+            for (k = 0; k < 4; ++k)
+            {
+                data = (data << 8) | (int)(sbyte)key[j];
+                j = (short)(j + 1);
+                if (j >= key.Length)
+                {
                     j = 0;
                 }
             }
-            this.p[i] = this.p[i] ^ (uint) data;
+            p[i] = p[i] ^ (uint)data;
         }
 
         datal = 0x00000000;
         datar = 0x00000000;
 
-        for (i = 0; i < N + 2; i += 2) {
-            this.BlowfishEncipher(ref datal, ref datar);
+        for (i = 0; i < N + 2; i += 2)
+        {
+            BlowfishEncipher(ref datal, ref datar);
 
-            this.p[i] = datal;
-            this.p[i + 1] = datar;
+            p[i] = datal;
+            p[i + 1] = datar;
         }
 
-        for (i = 0; i < 4; ++i) {
-            for (j = 0; j < 256; j += 2) {
-                this.BlowfishEncipher(ref datal, ref datar);
-                this.s[i, j] = datal;
-                this.s[i, j + 1] = datar;
+        for (i = 0; i < 4; ++i)
+        {
+            for (j = 0; j < 256; j += 2)
+            {
+                BlowfishEncipher(ref datal, ref datar);
+                s[i, j] = datal;
+                s[i, j + 1] = datar;
             }
         }
-
-        return 0;
     }
 }

@@ -1,4 +1,4 @@
-﻿using System.Net.Sockets;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using TemporalStasis.Encryption;
@@ -56,7 +56,7 @@ public class LobbyProxyClient {
 
     public async Task SendPacketAsync(RawInterceptedPacket packet, bool serverbound) {
         if (this.brokefish is not null && packet.SegmentHeader.SegmentType == SegmentType.Ipc) {
-            this.brokefish.Encipher(packet.Data, 0, packet.Data.Length);
+            this.brokefish.EncipherPadded(packet.Data);
         }
 
         await this.semaphore.WaitAsync();
@@ -84,6 +84,8 @@ public class LobbyProxyClient {
     private async Task Proxy(NetworkStream src, NetworkStream dest, bool serverbound) {
         while (src.CanRead && dest.CanWrite) {
             var header = await src.ReadStructAsync<PacketHeader>();
+            Console.WriteLine($"{(serverbound ? "SB" : "CB")} Header: {header.Size} {header.UncompressedSize}");
+
             var survivedPackets = new List<RawInterceptedPacket>();
 
             using var rawPacket = new MemoryStream();
@@ -92,6 +94,7 @@ public class LobbyProxyClient {
 
             for (var i = 0; i < header.Count; i++) {
                 var packet = new RawInterceptedPacket(src);
+                Console.WriteLine($"{(serverbound ? "SB" : "CB")} Segment: {packet.SegmentHeader.Size} {packet.Data.Length}");
 
                 if (packet.SegmentHeader.SegmentType == SegmentType.EncryptionInit && serverbound) {
                     var key = BitConverter.ToUInt32(packet.Data, 100);
@@ -109,19 +112,21 @@ public class LobbyProxyClient {
                     baseKey[9] = 0x1b;
                     keyPhrase.CopyTo(baseKey, 0xc);
 
-                    var encKey = MD5.Create().ComputeHash(baseKey);
+                    var encKey = MD5.HashData(baseKey);
                     this.brokefish = new Brokefish(encKey);
                 }
 
                 // Blowfish only applies to IPC packets
-                var shouldRecrypt = this.brokefish is not null && packet.SegmentHeader.SegmentType == SegmentType.Ipc;
+                var shouldRecrypt = this.brokefish is not null && packet.SegmentHeader.SegmentType is SegmentType.Ipc or SegmentType.EncryptedData;
 
                 // Slow, but it works for now
                 if (shouldRecrypt) {
-                    this.brokefish!.Decipher(packet.Data, 0, packet.Data.Length);
+                    this.brokefish!.DecipherPadded(packet.Data);
+                    Console.WriteLine($"{(serverbound ? "SB" : "CB")}: Decrypted {packet.Data.Length} bytes");
                 }
 
                 var dropped = false;
+                Console.WriteLine($"Type: {header.ConnectionType}");
                 this.raw.Invoke(ref packet, ref dropped, serverbound);
 
                 if (packet.SegmentHeader.SegmentType == SegmentType.Ipc) {
@@ -140,7 +145,7 @@ public class LobbyProxyClient {
                 rawPacketSize += (int) packet.SegmentHeader.Size;
 
                 if (shouldRecrypt) {
-                    this.brokefish!.Encipher(packet.Data, 0, packet.Data.Length);
+                    this.brokefish!.EncipherPadded(packet.Data);
                 }
 
                 if (!dropped) survivedPackets.Add(packet);
@@ -171,8 +176,10 @@ public class LobbyProxyClient {
 
             await this.semaphore.WaitAsync();
             try {
+                Console.WriteLine("Header");
                 await dest.WriteStructAsync(header);
                 foreach (var packet in survivedPackets) {
+                    Console.WriteLine($"Segment {packet.Data.Length}");
                     dest.WriteStruct(packet.SegmentHeader);
                     await dest.WriteBytesAsync(packet.Data);
                 }
