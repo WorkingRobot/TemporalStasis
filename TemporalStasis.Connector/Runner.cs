@@ -1,21 +1,65 @@
 using System.Net;
 using System.Web;
 using TemporalStasis.Connector.Clientbound;
+using TemporalStasis.Connector.Login;
 using TemporalStasis.Connector.Serverbound;
 using TemporalStasis.Structs;
 
 namespace TemporalStasis.Connector;
 
-internal static class Program
+internal sealed class Runner : IDisposable
 {
-    static Client Client;
+    private Client Client { get; }
 
     const bool IsLocal = false;
 
+    const string Username = "nice try";
+    const string Password = "nice try";
+    const string? Otp = null;
+    const bool IsFreeTrial = true;
+    const bool IsSteam = false;
+
+    const string BlowfishPhrase = "06c67fb0bb427f0e2f12433b9172f12e";
+    const uint BlowfishVersion = 7000;
+    const ushort LoginVersion = 7000;
+
+    static readonly string[] ExVersions = ["2024.11.19.0000.0000", "2024.11.19.0000.0000", "2024.12.07.0000.0000", "2024.12.07.0000.0000", "2024.12.07.0000.0000"];
+    const string GameVersion = "2024.12.07.0000.0000";
+    const string BootVersion = "2024.11.01.0001.0001";
+
+    static readonly FileReport GameExe =
+        new("ffxiv_dx11.exe", 48641808, Convert.FromHexString("1c4d47684f5f25e8d17367ec9b38e582d1744262"));
+    static readonly FileReport[] BootHashes = [
+        new("ffxivboot.exe", 1089296, Convert.FromHexString("a351529a185333aaaa8e91f138efc3729ec7900d")),
+        new("ffxivboot64.exe", 1282320, Convert.FromHexString("4a1f28c1d29a83e0070d4506366211115e89c12d")),
+        new("ffxivlauncher64.exe", 13871376, Convert.FromHexString("17c033e02bd74e575472dbcdbbb4d341b41189d0")),
+        new("ffxivupdater64.exe", 1338128, Convert.FromHexString("165380fcf21f5b610085b3fc66f91f3c0513eaf8")),
+    ];
+
+    private LoginClient.LoginResult LoginData { get; set; }
+    private string PatchUniqueId { get; set; }
+
     static async Task Main(string[] args)
     {
-        var aether = await Dns.GetHostEntryAsync("neolobby06.ffxiv.com");
+        var aether = await Dns.GetHostEntryAsync("neolobby03.ffxiv.com").ConfigureAwait(false);
         var addr = IsLocal ? IPAddress.Loopback : aether.AddressList[0];
+
+        await new Runner(addr, IsLocal ? 44994 : 54994).RunAsync().ConfigureAwait(false);
+    }
+
+    public Runner(IPAddress lobbyHost, int lobbyPort)
+    {
+        Client = new(lobbyHost, lobbyPort);
+    }
+
+    public async Task RunAsync()
+    {
+        using var loginClient = new LoginClient();
+        var loginToken = await loginClient.GetLoginTokenAsync(IsFreeTrial).ConfigureAwait(false);
+        LoginData = await loginClient.LoginOAuth(loginToken, Username, Password, Otp).ConfigureAwait(false);
+        var report = LoginClient.GenerateVersionReport(BootVersion, BootHashes, ExVersions.AsSpan()[..LoginData.MaxExpansion]);
+        PatchUniqueId = await loginClient.GetUniqueIdAsync(LoginData, GameVersion, report).ConfigureAwait(false);
+        Console.WriteLine($"UID: {PatchUniqueId}");
 
         var cts = new CancellationTokenSource();
         //Console.CancelKeyPress += (sender, eventArgs) =>
@@ -24,27 +68,22 @@ internal static class Program
         //    eventArgs.Cancel = true;
         //};
 
-        using var client = new Client(addr, IsLocal ? 44994 : 54994);
-        Client = client;
-
-        client.OnIpc += OnIpc;
-        client.OnNonIpc += OnNonIpc;
+        Client.OnIpc += OnIpc;
+        Client.OnNonIpc += OnNonIpc;
 
         WaitingForPing = true;
         CancelToken = cts.Token;
-        await client.ConnectAsync().ConfigureAwait(false);
-        await client.RecieveTask(cts.Token).ConfigureAwait(false);
+        await Client.ConnectAsync().ConfigureAwait(false);
+        await Client.RecieveTask(cts.Token).ConfigureAwait(false);
     }
 
-    static async Task OnIpc(PacketHeader header, PacketSegment segment, IpcData ipc)
+    private async Task OnIpc(PacketHeader header, PacketSegment segment, IpcData ipc)
     {
-        Console.WriteLine($"Ipc Data Recieved: {ipc.Header.Opcode}; {ipc.Header.ServerId}; {ipc.Header.Timestamp}; {ipc.Header.Unknown0}; {ipc.Header.Unknown4}; {ipc.Header.Unknown12}; {ipc.Data.Length}");
-        Console.WriteLine(Convert.ToHexString(ipc.Data));
-
         // Send 5 LoginEx
         // Receive 12 LoginReply
 
         // Send 3 ServiceLogin
+        // (Receive 2 if bad data)
         // Receive 21 DistWorldInfo
         // Receive 21 DistWorldInfo
         // Receive 22 XiCharacterInfo
@@ -179,7 +218,6 @@ internal static class Program
                 Console.WriteLine($"DC Travel Token: {data.DatacenterToken:X8}");
                 using var http = new HttpClient();
                 http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "FFXIV CLIENT");
-                http.DefaultRequestHeaders.TryAddWithoutValidation("Content-Type", "application/json ; charset=UTF-8");
 
                 var uri = new UriBuilder("https://dctravel.ffxiv.com/worlds");
                 var qs = HttpUtility.ParseQueryString(string.Empty);
@@ -204,22 +242,22 @@ internal static class Program
         }
     }
 
-    static uint Fingerprint;
-    static uint RequestNumber;
+    uint Fingerprint;
+    uint RequestNumber;
 
-    static bool WaitingForPing;
-    static CancellationToken CancelToken;
+    bool WaitingForPing;
+    CancellationToken CancelToken;
 
-    static bool WaitingForLoginReply;
-    static List<LoginReplyPacket.Account>? ServiceAccounts;
+    bool WaitingForLoginReply;
+    List<LoginReplyPacket.Account>? ServiceAccounts;
 
-    static bool WaitingForDistInfo;
-    static List<DistWorldInfoPacket.World>? Worlds;
-    static List<XiCharacterInfoPacket.Character>? XiCharacters;
-    static List<DistRetainerInfoPacket.Retainer>? Retainers;
-    static List<ServiceLoginReplyPacket.Character>? Characters;
+    bool WaitingForDistInfo;
+    List<DistWorldInfoPacket.World>? Worlds;
+    List<XiCharacterInfoPacket.Character>? XiCharacters;
+    List<DistRetainerInfoPacket.Retainer>? Retainers;
+    List<ServiceLoginReplyPacket.Character>? Characters;
 
-    static async Task OnNonIpc(PacketHeader header, PacketSegment segment)
+    private async Task OnNonIpc(PacketHeader header, PacketSegment segment)
     {
         if (segment.Header.SegmentType == SegmentType.EncryptedData)
         {
@@ -241,9 +279,8 @@ internal static class Program
                         {
                             Opcode = 5,
                             Payload =
-                                new LoginExPacket(++RequestNumber, 7000, "nice try", 48641808,
-                                    Convert.FromHexString("1c4d47684f5f25e8d17367ec9b38e582d1744262"),
-                                    ["2024.11.19.0000","2024.11.19.0000","2024.12.07.0000","2024.12.07.0000","2024.12.07.0000"]
+                                new LoginExPacket(++RequestNumber, LoginVersion, PatchUniqueId, IsSteam,
+                                    GameExe, ExVersions[..LoginData.MaxExpansion]
                                 ).Generate()
                         }.Generate(Client.Brokefish!)
                     }
@@ -261,9 +298,7 @@ internal static class Program
                 WaitingForPing = false;
 
                 Console.WriteLine($"Initializing encryption {Convert.ToHexString(segment.Data)}");
-                var key = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                var phrase = "06c67fb0bb427f0e2f12433b9172f12e";
-                await Client.InitializeEncryption(phrase, key).ConfigureAwait(false);
+                await Client.InitializeEncryption(BlowfishPhrase, (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds(), BlowfishVersion).ConfigureAwait(false);
             }
 
             _ = Task.Run(async () =>
@@ -278,12 +313,8 @@ internal static class Program
         }
     }
 
-    private static void AddRangeIf<T>(this List<T> me, ReadOnlySpan<T> span, Predicate<T> predicate)
+    public void Dispose()
     {
-        foreach(ref readonly var i in span)
-        {
-            if (predicate(i))
-                me.Add(i);
-        }
+        Client.Dispose();
     }
 }

@@ -20,6 +20,9 @@ public record SendableIpcPacket
         s.WriteStruct(header);
         s.Write(Payload);
         var ret = s.ToArray();
+
+        //Console.WriteLine($"Sending IPC Packet: {Convert.ToHexString(ret)}");
+
         brokefish.EncipherPadded(ret);
         return ret;
     }

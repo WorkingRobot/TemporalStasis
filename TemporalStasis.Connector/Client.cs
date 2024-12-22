@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Security.Cryptography;
 using TemporalStasis.Connector.Serverbound;
 using TemporalStasis.Encryption;
 using TemporalStasis.Structs;
@@ -42,21 +41,23 @@ public sealed class Client(IPAddress host, int port) : IDisposable
                 if (segment.Header.SegmentType is SegmentType.EncryptedData or SegmentType.Ipc)
                     segment.Decrypt(Brokefish!);
 
+                Console.WriteLine($"Received segment {segment.Header.SegmentType}");
                 if (segment.Header.SegmentType == SegmentType.Ipc)
                 {
-                    var ipcData = new IpcData(segment);
+                    var ipc = new IpcData(segment);
                     if (OnIpc != null)
-                        await OnIpc.Invoke(header, segment, ipcData).ConfigureAwait(false);
+                        await OnIpc.Invoke(header, segment, ipc).ConfigureAwait(false);
+
+                    Console.WriteLine($"Ipc Data Recieved: {ipc.Header.Opcode}; {ipc.Header.ServerId}; {ipc.Header.Timestamp}; {ipc.Header.Unknown0}; {ipc.Header.Unknown4}; {ipc.Header.Unknown12}; {ipc.Data.Length}");
+                    //Console.WriteLine(Convert.ToHexString(ipc.Data));
                 }
                 else
                 {
                     if (OnNonIpc != null)
                         await OnNonIpc.Invoke(header, segment).ConfigureAwait(false);
 
+                    //Console.WriteLine($"Segment data: {Convert.ToHexString(segment.Data)}");
                 }
-
-                Console.WriteLine($"Received segment {segment.Header.SegmentType}");
-                Console.WriteLine($"Segment data: {Convert.ToHexString(segment.Data)}");
             }
         }
     }
@@ -66,6 +67,7 @@ public sealed class Client(IPAddress host, int port) : IDisposable
         if (Stream == null)
             throw new InvalidOperationException("Client not connected");
 
+        Console.WriteLine("Sending a packet");
 
         var segments = packet.Generate();
         var l = new List<byte>();
@@ -77,13 +79,13 @@ public sealed class Client(IPAddress host, int port) : IDisposable
         SendSemaphore.Release();
     }
 
-    public async Task InitializeEncryption(string keyPhrase, uint key)
+    public async Task InitializeEncryption(string keyPhrase, uint key, uint keyVersion)
     {
-        Brokefish = new BrokefishKey(keyPhrase, key, 7000).Create();
+        Brokefish = new BrokefishKey(keyPhrase, key, keyVersion).Create();
 
         var pkt = new SendablePacket()
         {
-            ConnectionType = ConnectionType.None,
+            ConnectionType = ConnectionType.Lobby,
             Segments = [new SendablePacketSegment() {
                 SegmentType = SegmentType.EncryptionInit,
                 Payload = new EncryptionInitPacket(keyPhrase, key).Generate()

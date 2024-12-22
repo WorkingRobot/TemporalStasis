@@ -12,8 +12,8 @@ public unsafe struct CharaMakePacket
     public byte CharacterIdx;
     public OperationType Operation;
     public ushort WorldId;
-    public unsafe fixed char CharacterName[32];
-    public unsafe fixed char CharaMakeData[436];
+    public unsafe fixed byte CharacterName[32];
+    public unsafe fixed byte CharaMakeData[436];
 
     public enum OperationType : byte
     {

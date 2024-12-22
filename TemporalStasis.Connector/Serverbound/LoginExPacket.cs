@@ -16,10 +16,9 @@ public unsafe struct LoginExPacket
     public unsafe fixed byte SessionId[64];
     public unsafe fixed byte VersionData[192];
 
-    public LoginExPacket(uint reqNumber, ushort version, string sessionId, long exeFileSize, byte[] exeFileSha1, string[] exVersions)
+    public LoginExPacket(uint reqNumber, ushort version, string sessionId, bool isSteam, FileReport executable, string[] exVersions)
     {
         ArgumentOutOfRangeException.ThrowIfNotEqual(sessionId.Length, 32);
-        ArgumentOutOfRangeException.ThrowIfNotEqual(exeFileSha1.Length, 20);
 
         RequestNumber = reqNumber;
         Unknown4 = 0; // ClientTimeValue
@@ -27,7 +26,7 @@ public unsafe struct LoginExPacket
         LobbyLoginMode = version;
         Unknown12 = 4944;
         Unknown14 = 18; // PlatformType (?)
-        Unknown16 = 1; // PlatformMode
+        Unknown16 = (ushort)(isSteam ? 1 : 0); // PlatformMode
 
         fixed (byte* p = SessionId)
         {
@@ -36,11 +35,11 @@ public unsafe struct LoginExPacket
         }
 
         var s = new StringBuilder();
-        s.Append($"ffxiv_dx11.exe/{exeFileSize}/{Convert.ToHexString(exeFileSha1).ToLowerInvariant()}");
+        s.Append(executable.Report);
         foreach (var ver in exVersions)
         {
             s.Append('+');
-            s.Append(ver);
+            s.Append(ver[..15]); // Truncate the "part" section
         }
         fixed (byte* p = VersionData)
         {
