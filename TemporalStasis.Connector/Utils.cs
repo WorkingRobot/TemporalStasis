@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text.Json.Serialization;
 
 namespace TemporalStasis.Connector;
 
@@ -24,6 +25,7 @@ internal static class Utils
 
 public readonly record struct FileReport(string FileName, long FileSize, byte[] Sha1Hash)
 {
+    [JsonIgnore]
     public string Report =>
         $"{FileName}/{FileSize}/{Convert.ToHexString(Sha1Hash).ToLowerInvariant()}";
 }
