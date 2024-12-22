@@ -6,21 +6,64 @@ using TemporalStasis.Structs;
 
 namespace TemporalStasis.Connector;
 
-public sealed class Client(IPAddress host, int port) : IDisposable
+public sealed class Client(IPEndPoint lobbyEndpoint) : IDisposable
 {
     public TcpClient? TcpClient { get; private set; }
     public NetworkStream? Stream { get; private set; }
     public Brokefish? Brokefish { get; private set; }
 
-    public event Func<PacketHeader, PacketSegment, IpcData, Task>? OnIpc;
-    public event Func<PacketHeader, PacketSegment, Task>? OnNonIpc;
+    public event Func<PacketHeader, PacketSegment, IpcData, Task> OnIpc
+    {
+        add
+        {
+            lock (onIpcLock)
+                onIpc.Add(value);
+        }
+        remove
+        {
+            lock (onIpcLock)
+                onIpc.Remove(value);
+        }
+    }
+    private readonly object onIpcLock = new();
+    private readonly List<Func<PacketHeader, PacketSegment, IpcData, Task>> onIpc = [];
+    private Task InvokeOnIpc(PacketHeader a, PacketSegment b, IpcData c)
+    {
+        Func<PacketHeader, PacketSegment, IpcData, Task>[] t;
+        lock (onIpcLock)
+            t = [.. onIpc];
+        return Task.WhenAll(t.Select(f => f(a, b, c)));
+    }
 
-    private SemaphoreSlim SendSemaphore = new(1);
+    public event Func<PacketHeader, PacketSegment, Task> OnNonIpc
+    {
+        add
+        {
+            lock (onNonIpcLock)
+                onNonIpc.Add(value);
+        }
+        remove
+        {
+            lock (onNonIpcLock)
+                onNonIpc.Remove(value);
+        }
+    }
+    private readonly object onNonIpcLock = new();
+    private readonly List<Func<PacketHeader, PacketSegment, Task>> onNonIpc = [];
+    private Task InvokeOnNonIpc(PacketHeader a, PacketSegment b)
+    {
+        Func<PacketHeader, PacketSegment, Task>[] t;
+        lock (onNonIpcLock)
+            t = [.. onNonIpc];
+        return Task.WhenAll(t.Select(f => f(a, b)));
+    }
+
+    private SemaphoreSlim SendSemaphore { get; } = new(1);
 
     public async Task ConnectAsync(CancellationToken ct = default)
     {
         TcpClient = new();
-        await TcpClient.ConnectAsync(host, port, ct).ConfigureAwait(false);
+        await TcpClient.ConnectAsync(lobbyEndpoint, ct).ConfigureAwait(false);
         Stream = TcpClient.GetStream();
     }
 
@@ -31,9 +74,10 @@ public sealed class Client(IPAddress host, int port) : IDisposable
 
         while (!ct.IsCancellationRequested && Stream.CanRead)
         {
-            var header = await Stream.ReadStructAsync<PacketHeader>().ConfigureAwait(false);
+            var header = await Stream.ReadStructAsync<PacketHeader>(ct).ConfigureAwait(false);
 
-            Console.WriteLine($"Received packet Compression {header.CompressionType} ConnectionType {header.ConnectionType}");
+            if (ct.IsCancellationRequested)
+                return;
             for (var i = 0; i < header.Count; ++i)
             {
                 var segment = new PacketSegment(Stream);
@@ -41,23 +85,10 @@ public sealed class Client(IPAddress host, int port) : IDisposable
                 if (segment.Header.SegmentType is SegmentType.EncryptedData or SegmentType.Ipc)
                     segment.Decrypt(Brokefish!);
 
-                Console.WriteLine($"Received segment {segment.Header.SegmentType}");
                 if (segment.Header.SegmentType == SegmentType.Ipc)
-                {
-                    var ipc = new IpcData(segment);
-                    if (OnIpc != null)
-                        await OnIpc.Invoke(header, segment, ipc).ConfigureAwait(false);
-
-                    Console.WriteLine($"Ipc Data Recieved: {ipc.Header.Opcode}; {ipc.Header.ServerId}; {ipc.Header.Timestamp}; {ipc.Header.Unknown0}; {ipc.Header.Unknown4}; {ipc.Header.Unknown12}; {ipc.Data.Length}");
-                    //Console.WriteLine(Convert.ToHexString(ipc.Data));
-                }
+                    await InvokeOnIpc(header, segment, new IpcData(segment)).ConfigureAwait(false);
                 else
-                {
-                    if (OnNonIpc != null)
-                        await OnNonIpc.Invoke(header, segment).ConfigureAwait(false);
-
-                    //Console.WriteLine($"Segment data: {Convert.ToHexString(segment.Data)}");
-                }
+                    await InvokeOnNonIpc(header, segment).ConfigureAwait(false);
             }
         }
     }
@@ -66,8 +97,6 @@ public sealed class Client(IPAddress host, int port) : IDisposable
     {
         if (Stream == null)
             throw new InvalidOperationException("Client not connected");
-
-        Console.WriteLine("Sending a packet");
 
         var segments = packet.Generate();
         var l = new List<byte>();

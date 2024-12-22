@@ -2,10 +2,6 @@ using System.Text;
 using System.Web;
 using System.Net;
 using System.Security.Cryptography;
-using Newtonsoft.Json.Linq;
-using static System.Net.WebRequestMethods;
-using Microsoft.VisualBasic;
-using static TemporalStasis.Connector.Login.LoginClient;
 
 namespace TemporalStasis.Connector.Login;
 

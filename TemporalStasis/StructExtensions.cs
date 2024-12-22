@@ -18,8 +18,8 @@ public static class StructExtensions {
         return @struct;
     }
 
-    public static async Task<T> ReadStructAsync<T>(this Stream stream) where T : struct {
-        var buffer = await stream.ReadBytesAsync(Unsafe.SizeOf<T>());
+    public static async Task<T> ReadStructAsync<T>(this Stream stream, CancellationToken token = default) where T : struct {
+        var buffer = await stream.ReadBytesAsync(Unsafe.SizeOf<T>(), token);
         return buffer.ReadStruct<T>();
     }
 
@@ -36,7 +36,7 @@ public static class StructExtensions {
         handle.Free();
     }
 
-    public static async Task WriteStructAsync<T>(this Stream stream, T @struct) where T : struct {
+    public static async Task WriteStructAsync<T>(this Stream stream, T @struct, CancellationToken token = default) where T : struct {
         var size = Unsafe.SizeOf<T>();
         var buffer = new byte[size];
         buffer.WriteStruct(@struct);
@@ -50,10 +50,10 @@ public static class StructExtensions {
         return buffer;
     }
 
-    public static async Task<byte[]> ReadBytesAsync(this Stream stream, int size) {
+    public static async Task<byte[]> ReadBytesAsync(this Stream stream, int size, CancellationToken token = default) {
         var buffer = new byte[size];
         var read = 0;
-        while (read < size) read += await stream.ReadAsync(buffer.AsMemory(read, size - read));
+        while (read < size && !token.IsCancellationRequested) read += await stream.ReadAsync(buffer.AsMemory(read, size - read), token);
         return buffer;
     }
 
@@ -61,7 +61,7 @@ public static class StructExtensions {
         stream.Write(buffer, 0, buffer.Length);
     }
 
-    public static async Task WriteBytesAsync(this Stream stream, byte[] buffer) {
-        await stream.WriteAsync(buffer.AsMemory(0, buffer.Length));
+    public static async Task WriteBytesAsync(this Stream stream, byte[] buffer, CancellationToken token = default) {
+        await stream.WriteAsync(buffer.AsMemory(0, buffer.Length), token);
     }
 }
