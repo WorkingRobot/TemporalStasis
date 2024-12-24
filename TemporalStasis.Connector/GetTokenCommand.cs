@@ -13,17 +13,18 @@ public class GetTokenCommand
     private static Task<int> Main(string[] args) =>
         Cli.RunAsync<GetTokenCommand>(args);
 
-    [CliArgument(Required = true, Description = "The lobby endpoint to access. Accepts DNS names and IPs")]
-    public required string LobbyHost { get; set; }
+    [CliArgument(Required = true, Arity = CliArgumentArity.OneOrMore, Description = "The lobby endpoints to access. Accepts DNS names, IPs, and ports")]
+    public required string[] LobbyHosts { get; set; }
 
-    [CliArgument(Required = false, Description = "The lobby point to use")]
-    public int LobbyPort { get; set; } = 54994;
+    // Version Info
 
-    [CliOption(Required = false, Description = "A json file to where all the version information is stored")]
+    [CliOption(Required = false, Description = "A json file to where all the version information is stored", ValidationRules = CliValidationRules.ExistingFile)]
     public FileInfo? VersionFile { get; set; }
 
     [CliOption(Required = false, Description = "A json url to where all the version information is stored", ValidationRules = CliValidationRules.LegalUrl)]
     public Uri? VersionUrl { get; set; }
+
+    // Username/Password
 
     [CliOption(Required = false)]
     public string? Username { get; set; }
@@ -31,23 +32,60 @@ public class GetTokenCommand
     [CliOption(Required = false)]
     public string? Password { get; set; }
 
+    [CliOption(Name = "--free-trial")]
+    public bool IsFreeTrial { get; set; } = false;
+
+    // UID
+
     [CliOption(Required = false)]
     public string? UID { get; set; }
 
     [CliOption(Required = false)]
     public int? MaxExpansion { get; set; }
 
-    [CliOption(Name = "--free-trial")]
-    public bool IsFreeTrial { get; set; } = false;
+    // Caches
+
+    [CliOption(Name = "--uid-cache-name", Required = false)]
+    public string UIDCacheName { get; set; } = string.Empty;
+
+    [CliOption(Name = "--uid-cache", Required = false, ValidationRules = CliValidationRules.LegalFileName)]
+    public FileInfo? UIDCache { get; set; }
+
+    [CliOption(Name = "--dc-token-cache", Required = false, ValidationRules = CliValidationRules.LegalFileName)]
+    public FileInfo? DCTokenCache { get; set; }
+
+    [CliOption(Name = "--uid-ttl")]
+    public TimeSpan UIDTTL { get; set; } = TimeSpan.FromDays(1);
+
+    [CliOption(Name = "--dc-token-ttl")]
+    public TimeSpan DCTokenTTL { get; set; } = TimeSpan.FromDays(5);
+
+    // Action Limiters
 
     [CliOption(Name = "--only-dc-token")]
     public bool OnlyDCToken { get; set; } = false;
 
     [CliOption(Name = "--only-uid-data")]
     public bool OnlyUIDData { get; set; } = false;
+    
+    // Misc
 
     [CliOption]
     public bool Verbose { get; set; } = false;
+
+    public struct UIDCacheEntry
+    {
+        public LoginInfo LoginInfo { get; set; }
+        public DateTime CreationDate { get; set; }
+    }
+
+    public struct DCTokenCacheEntry
+    {
+        public ulong CharacterId { get; set; }
+        public ushort WorldId { get; set; }
+        public uint DCToken { get; set; }
+        public DateTime CreationDate { get; set; }
+    }
 
     public async Task RunAsync()
     {
@@ -72,37 +110,57 @@ public class GetTokenCommand
         else
             throw new ArgumentException("Either version file or version url must be specified");
 
-        if (!IPAddress.TryParse(LobbyHost, out var lobbyAddress))
+        var endpoints = await Task.WhenAll(LobbyHosts.Select(async (host) =>
         {
-            var t = await Dns.GetHostEntryAsync(LobbyHost).ConfigureAwait(false);
-            lobbyAddress = t.AddressList[0];
-        }
+            var port = 54994;
+            var portSplitIdx = host.LastIndexOf(':');
+            if (portSplitIdx != -1)
+            {
+                port = int.Parse(host.AsSpan()[(portSplitIdx + 1)..]);
+                host = host[..portSplitIdx];
+            }
 
-        LoginInfo loginInfo;
+            if (!IPAddress.TryParse(host, out var address))
+            {
+                var t = await Dns.GetHostEntryAsync(host).ConfigureAwait(false);
+                address = t.AddressList[0];
+            }
+            return new IPEndPoint(address, port);
+        })).ConfigureAwait(false);
+
+        LoginInfo? loginInfoValue = null;
+
         if (!string.IsNullOrEmpty(UID) && MaxExpansion.HasValue)
         {
-            loginInfo = new()
+            loginInfoValue = new()
             {
                 UniqueId = UID,
                 IsSteam = false,
                 MaxExpansion = MaxExpansion.Value
             };
+            await WriteUIDCacheEntryAsync(loginInfoValue.Value, cts.Token).ConfigureAwait(false);
         }
-        else if (!string.IsNullOrEmpty(Username) && !string.IsNullOrEmpty(Password))
+
+        if (!loginInfoValue.HasValue)
+            loginInfoValue = await GetUIDCacheEntryAsync(cts.Token).ConfigureAwait(false);
+
+        if (!loginInfoValue.HasValue && !string.IsNullOrEmpty(Username) && !string.IsNullOrEmpty(Password))
         {
             using var loginClient = new LoginClient();
             var loginToken = await loginClient.GetLoginTokenAsync(IsFreeTrial).ConfigureAwait(false);
             var loginData = await loginClient.LoginOAuth(loginToken, Username, Password, null).ConfigureAwait(false);
             var report = LoginClient.GenerateVersionReport(versionInfo.BootVersion, versionInfo.BootHashes, versionInfo.ExVersions.AsSpan()[..loginData.MaxExpansion]);
             var uniqueId = await loginClient.GetUniqueIdAsync(loginData, versionInfo.GameVersion, report).ConfigureAwait(false);
-            loginInfo = new()
+            loginInfoValue = new()
             {
                 UniqueId = uniqueId,
                 IsSteam = false,
                 MaxExpansion = loginData.MaxExpansion
             };
+            await WriteUIDCacheEntryAsync(loginInfoValue.Value, cts.Token).ConfigureAwait(false);
         }
-        else
+
+        var loginInfo = loginInfoValue ??
             throw new ArgumentException("Either username/password or uid/max expansion must be specified");
 
         if (OnlyUIDData)
@@ -118,104 +176,199 @@ public class GetTokenCommand
             Console.WriteLine();
         }
 
-        using var runner = new Runner(new(lobbyAddress, LobbyPort), versionInfo, loginInfo, cts.Token);
+        var runnerTasks = endpoints.Select(e => ExecuteRunner(e, versionInfo, loginInfo, cts.Token));
+        await Task.WhenAll(runnerTasks).ConfigureAwait(false);
+    }
 
-        if (Verbose)
+    private async Task ExecuteRunner(IPEndPoint endpoint, VersionInfo versionInfo, LoginInfo loginInfo, CancellationToken token)
+    {
+        var dcTokenData = await GetDCTokenCacheEntryAsync(endpoint, token).ConfigureAwait(false);
+
+        if (!dcTokenData.HasValue)
         {
+            var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+
+            using var runner = new Runner(endpoint, versionInfo, loginInfo, cts.Token);
+
+            if (Verbose)
+            {
+                runner.OnLogin += () =>
+                {
+                    Console.WriteLine("Worlds:");
+                    foreach (var world in runner.Worlds)
+                        Console.WriteLine($"World {world.Id}: {world.Name}");
+                    Console.WriteLine();
+
+                    Console.WriteLine("FFXI Characters:");
+                    foreach (var character in runner.XiCharacters)
+                        Console.WriteLine($"XiChar {character.Id:X8}: {character.Name} (World {character.WorldParam})");
+                    Console.WriteLine();
+
+                    Console.WriteLine("Retainers:");
+                    foreach (var retainer in runner.Retainers)
+                        Console.WriteLine($"Retainer {retainer.Id:X16} (Owner {retainer.OwnerId:X16}): {retainer.Name}");
+                    Console.WriteLine();
+
+                    Console.WriteLine("Characters:");
+                    foreach (var character in runner.Characters)
+                    {
+                        Console.WriteLine($"Character {character.CharacterId:X16} (Player {character.PlayerId:X16}): {character.Name}");
+                        Console.WriteLine($"  At {character.WorldName} ({character.WorldId})");
+                        Console.WriteLine($"  Home {character.HomeWorldName} ({character.HomeWorldId})");
+                        Console.WriteLine($"  JSON: {character.Json}");
+                    }
+                    Console.WriteLine();
+
+                    return Task.CompletedTask;
+                };
+            }
+
             runner.OnLogin += () =>
             {
-                Console.WriteLine("Worlds:");
-                foreach (var world in runner.Worlds)
-                    Console.WriteLine($"World {world.Id}: {world.Name}");
-                Console.WriteLine();
+                if (runner.Characters.Count == 0)
+                    throw new ArgumentException("No active accounts");
+                var character = runner.Characters[0];
 
-                Console.WriteLine("FFXI Characters:");
-                foreach (var character in runner.XiCharacters)
-                    Console.WriteLine($"XiChar {character.Id:X8}: {character.Name} (World {character.WorldParam})");
-                Console.WriteLine();
-
-                Console.WriteLine("Retainers:");
-                foreach (var retainer in runner.Retainers)
-                    Console.WriteLine($"Retainer {retainer.Id:X16} (Owner {retainer.OwnerId:X16}): {retainer.Name}");
-                Console.WriteLine();
-
-                Console.WriteLine("Characters:");
-                foreach (var character in runner.Characters)
+                _ = Task.Run(async () =>
                 {
-                    Console.WriteLine($"Character {character.CharacterId:X16} (Player {character.PlayerId:X16}): {character.Name}");
-                    Console.WriteLine($"  At {character.WorldName} ({character.WorldId})");
-                    Console.WriteLine($"  Home {character.HomeWorldName} ({character.HomeWorldId})");
-                    Console.WriteLine($"  JSON: {character.Json}");
-                }
-                Console.WriteLine();
+                    var token = await runner.GetDCTravelToken(character).ConfigureAwait(false);
+                    await WriteDCTokenCacheEntryAsync(endpoint, character.CharacterId, character.WorldId, token, cts.Token).ConfigureAwait(false);
+
+                    dcTokenData = (character.CharacterId, character.WorldId, token);
+                }).ContinueWith(t => cts.Cancel());
 
                 return Task.CompletedTask;
             };
+
+            try
+            {
+                await runner.RunAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                if (!cts.IsCancellationRequested)
+                    throw;
+            }
         }
 
-        runner.OnLogin += () =>
+        if (!dcTokenData.HasValue)
+            return;
+        var (characterId, worldId, dcToken) = dcTokenData.Value;
+
+        if (OnlyDCToken)
         {
-            if (runner.Characters.Count == 0)
-                throw new ArgumentException("No active accounts");
-            var character = runner.Characters[0];
+            Console.WriteLine(dcToken);
+            Console.WriteLine(worldId);
+            Console.WriteLine(characterId);
+            return;
+        }
 
-            _ = Task.Run(async () =>
-            {
-                var token = await runner.GetDCTravelToken(character).ConfigureAwait(false);
-                if (OnlyDCToken)
-                {
-                    Console.WriteLine(token);
-                    Console.WriteLine(character.WorldId);
-                    Console.WriteLine(character.CharacterId);
-                    return;
-                }
+        if (Verbose)
+        {
+            Console.WriteLine($"DC Travel Token: {dcToken:X8}");
+            Console.WriteLine($"World Id: {worldId}");
+            Console.WriteLine($"Character Id: {characterId:X16}");
+        }
 
-                if (Verbose)
-                {
-                    Console.WriteLine($"DC Travel Token: {token:X8}");
-                    Console.WriteLine($"World Id: {character.WorldId}");
-                    Console.WriteLine($"Character Id: {character.CharacterId:X16}");
-                }
+        await ExecuteDCToken(dcToken, worldId, characterId, token).ConfigureAwait(false);
+    }
 
-                using var http = new HttpClient();
-                http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "FFXIV CLIENT");
+    private async Task ExecuteDCToken(uint dcToken, ushort worldId, ulong characterId, CancellationToken token)
+    {
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "FFXIV CLIENT");
 
-                var uri = new UriBuilder("https://dctravel.ffxiv.com/worlds");
-                var qs = HttpUtility.ParseQueryString(string.Empty);
-                qs.Add("token", token.ToString());
-                qs.Add("worldId", character.WorldId.ToString());
-                qs.Add("characterId", character.CharacterId.ToString());
-                uri.Query = qs.ToString();
+        var uri = new UriBuilder("https://dctravel.ffxiv.com/worlds");
+        var qs = HttpUtility.ParseQueryString(string.Empty);
+        qs.Add("token", dcToken.ToString());
+        qs.Add("worldId", worldId.ToString());
+        qs.Add("characterId", characterId.ToString());
+        uri.Query = qs.ToString();
 
-                using var request = new HttpRequestMessage(HttpMethod.Get, uri.Uri)
-                {
-                    Version = HttpVersion.Version11,
-                    VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
-                    Content = new StringContent("\r\n")
-                };
-                request.Content.Headers.Clear();
-                request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json ; charset=UTF-8");
-
-                var ret = (await http.SendAsync(request).ConfigureAwait(false)).EnsureSuccessStatusCode();
-                if (Verbose)
-                {
-                    Console.WriteLine();
-                    Console.WriteLine("Travel Response:");
-                }
-                Console.WriteLine(await ret.Content.ReadAsStringAsync().ConfigureAwait(false));
-            }).ContinueWith(t => cts.Cancel());
-
-            return Task.CompletedTask;
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri.Uri)
+        {
+            Version = HttpVersion.Version11,
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+            Content = new StringContent("\r\n")
         };
+        request.Content.Headers.Clear();
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json ; charset=UTF-8");
 
+        var ret = (await http.SendAsync(request, token).ConfigureAwait(false)).EnsureSuccessStatusCode();
+        if (Verbose)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Travel Response:");
+        }
+        Console.WriteLine(await ret.Content.ReadAsStringAsync(token).ConfigureAwait(false));
+    }
+
+    private async Task<LoginInfo?> GetUIDCacheEntryAsync(CancellationToken token)
+    {
+        if (!(UIDCache?.Exists ?? false))
+            return null;
+        using var c = UIDCache.OpenRead();
+        var entries = c.Length == 0 ? null : await JsonSerializer.DeserializeAsync<Dictionary<string, UIDCacheEntry>>(c, cancellationToken: token).ConfigureAwait(false);
+        if (entries == null)
+            return null;
+        if (!entries.TryGetValue(UIDCacheName, out var entry))
+            return null;
+        if (entry.CreationDate + UIDTTL <= DateTime.UtcNow)
+            return null;
+        return entry.LoginInfo;
+    }
+
+    private async Task WriteUIDCacheEntryAsync(LoginInfo loginInfo, CancellationToken token)
+    {
+        if (UIDCache == null)
+            return;
+        using var c = UIDCache.Open(FileMode.OpenOrCreate, FileAccess.ReadWrite);
+        var entries = c.Length == 0 ? [] : await JsonSerializer.DeserializeAsync<Dictionary<string, UIDCacheEntry>>(c, cancellationToken: token).ConfigureAwait(false) ?? [];
+        entries[UIDCacheName] = new() { LoginInfo = loginInfo, CreationDate = DateTime.UtcNow };
+        c.SetLength(0);
+        await JsonSerializer.SerializeAsync(c, entries, cancellationToken: token).ConfigureAwait(false);
+    }
+
+    private SemaphoreSlim DCTokenCacheLock { get; } = new(1);
+    private async Task<(ulong CharacterId, ushort WorldId, uint DCToken)?> GetDCTokenCacheEntryAsync(IPEndPoint endpoint, CancellationToken token)
+    {
+        if (!(DCTokenCache?.Exists ?? false))
+            return null;
+        await DCTokenCacheLock.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            await runner.RunAsync().ConfigureAwait(false);
+            using var c = DCTokenCache.OpenRead();
+            var entries = c.Length == 0 ? null : await JsonSerializer.DeserializeAsync<Dictionary<string, DCTokenCacheEntry>>(c, cancellationToken: token).ConfigureAwait(false);
+            if (entries == null)
+                return null;
+            if (!entries.TryGetValue(endpoint.ToString(), out var entry))
+                return null;
+            if (entry.CreationDate + DCTokenTTL <= DateTime.UtcNow)
+                return null;
+            return (entry.CharacterId, entry.WorldId, entry.DCToken);
         }
-        catch (Exception)
+        finally
         {
-            if (!cts.IsCancellationRequested)
-                throw;
+            DCTokenCacheLock.Release();
+        }
+    }
+
+    private async Task WriteDCTokenCacheEntryAsync(IPEndPoint endpoint, ulong characterId, ushort worldId, uint dcToken, CancellationToken token)
+    {
+        if (DCTokenCache == null)
+            return;
+        await DCTokenCacheLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            using var c = DCTokenCache.Open(FileMode.OpenOrCreate, FileAccess.ReadWrite);
+            var entries = c.Length == 0 ? [] : await JsonSerializer.DeserializeAsync<Dictionary<string, DCTokenCacheEntry>>(c, cancellationToken: token).ConfigureAwait(false) ?? [];
+            entries[endpoint.ToString()] = new() { CharacterId = characterId, WorldId = worldId, DCToken = dcToken, CreationDate = DateTime.UtcNow };
+            c.SetLength(0);
+            await JsonSerializer.SerializeAsync(c, entries).ConfigureAwait(false);
+        }
+        finally
+        {
+            DCTokenCacheLock.Release();
         }
     }
 }
