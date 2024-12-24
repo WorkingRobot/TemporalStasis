@@ -49,10 +49,10 @@ public class GetTokenCommand
     [CliOption(Name = "--uid-cache-name", Required = false)]
     public string UIDCacheName { get; set; } = string.Empty;
 
-    [CliOption(Name = "--uid-cache", Required = false, ValidationRules = CliValidationRules.LegalFileName)]
+    [CliOption(Name = "--uid-cache", Required = false, ValidationRules = CliValidationRules.ExistingFile | CliValidationRules.NonExistingFile)]
     public FileInfo? UIDCache { get; set; }
 
-    [CliOption(Name = "--dc-token-cache", Required = false, ValidationRules = CliValidationRules.LegalFileName)]
+    [CliOption(Name = "--dc-token-cache", Required = false, ValidationRules = CliValidationRules.ExistingFile | CliValidationRules.NonExistingFile)]
     public FileInfo? DCTokenCache { get; set; }
 
     [CliOption(Name = "--uid-ttl")]
