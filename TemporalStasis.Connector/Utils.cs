@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json.Serialization;
+using static TemporalStasis.Connector.GetTokenCommand;
 
 namespace TemporalStasis.Connector;
 
@@ -28,4 +29,12 @@ public readonly record struct FileReport(string FileName, long FileSize, byte[] 
     [JsonIgnore]
     public string Report =>
         $"{FileName}/{FileSize}/{Convert.ToHexString(Sha1Hash).ToLowerInvariant()}";
+}
+
+[JsonSerializable(typeof(VersionInfo))]
+[JsonSerializable(typeof(Dictionary<string, UIDCacheEntry>))]
+[JsonSerializable(typeof(Dictionary<string, DCTokenCacheEntry>))]
+public partial class ConnectorSerializerContext : JsonSerializerContext
+{
+
 }

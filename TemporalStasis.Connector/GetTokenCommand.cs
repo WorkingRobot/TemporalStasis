@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Web;
 using TemporalStasis.Connector.Login;
+using SerCtx = TemporalStasis.Connector.ConnectorSerializerContext;
 
 namespace TemporalStasis.Connector;
 
@@ -100,12 +101,12 @@ public class GetTokenCommand
         if (VersionFile != null)
         {
             using var f = VersionFile.OpenRead();
-            versionInfo = await JsonSerializer.DeserializeAsync<VersionInfo>(f, cancellationToken: cts.Token).ConfigureAwait(false);
+            versionInfo = await JsonSerializer.DeserializeAsync(f, SerCtx.Default.VersionInfo, cancellationToken: cts.Token).ConfigureAwait(false);
         }
         else if (VersionUrl != null)
         {
             using var client = new HttpClient();
-            versionInfo = await client.GetFromJsonAsync<VersionInfo>(VersionUrl, cts.Token).ConfigureAwait(false);
+            versionInfo = await client.GetFromJsonAsync(VersionUrl, SerCtx.Default.VersionInfo, cts.Token).ConfigureAwait(false);
         }
         else
             throw new ArgumentException("Either version file or version url must be specified");
@@ -308,7 +309,7 @@ public class GetTokenCommand
         if (!(UIDCache?.Exists ?? false))
             return null;
         using var c = UIDCache.OpenRead();
-        var entries = c.Length == 0 ? null : await JsonSerializer.DeserializeAsync<Dictionary<string, UIDCacheEntry>>(c, cancellationToken: token).ConfigureAwait(false);
+        var entries = c.Length == 0 ? null : await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false);
         if (entries == null)
             return null;
         if (!entries.TryGetValue(UIDCacheName, out var entry))
@@ -323,10 +324,10 @@ public class GetTokenCommand
         if (UIDCache == null)
             return;
         using var c = UIDCache.Open(FileMode.OpenOrCreate, FileAccess.ReadWrite);
-        var entries = c.Length == 0 ? [] : await JsonSerializer.DeserializeAsync<Dictionary<string, UIDCacheEntry>>(c, cancellationToken: token).ConfigureAwait(false) ?? [];
+        var entries = c.Length == 0 ? [] : await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false) ?? [];
         entries[UIDCacheName] = new() { LoginInfo = loginInfo, CreationDate = DateTime.UtcNow };
         c.SetLength(0);
-        await JsonSerializer.SerializeAsync(c, entries, cancellationToken: token).ConfigureAwait(false);
+        await JsonSerializer.SerializeAsync(c, entries, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false);
     }
 
     private SemaphoreSlim DCTokenCacheLock { get; } = new(1);
@@ -338,7 +339,7 @@ public class GetTokenCommand
         try
         {
             using var c = DCTokenCache.OpenRead();
-            var entries = c.Length == 0 ? null : await JsonSerializer.DeserializeAsync<Dictionary<string, DCTokenCacheEntry>>(c, cancellationToken: token).ConfigureAwait(false);
+            var entries = c.Length == 0 ? null : await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringDCTokenCacheEntry, cancellationToken: token).ConfigureAwait(false);
             if (entries == null)
                 return null;
             if (!entries.TryGetValue(endpoint.ToString(), out var entry))
@@ -361,10 +362,10 @@ public class GetTokenCommand
         try
         {
             using var c = DCTokenCache.Open(FileMode.OpenOrCreate, FileAccess.ReadWrite);
-            var entries = c.Length == 0 ? [] : await JsonSerializer.DeserializeAsync<Dictionary<string, DCTokenCacheEntry>>(c, cancellationToken: token).ConfigureAwait(false) ?? [];
+            var entries = c.Length == 0 ? [] : await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringDCTokenCacheEntry, cancellationToken: token).ConfigureAwait(false) ?? [];
             entries[endpoint.ToString()] = new() { CharacterId = characterId, WorldId = worldId, DCToken = dcToken, CreationDate = DateTime.UtcNow };
             c.SetLength(0);
-            await JsonSerializer.SerializeAsync(c, entries).ConfigureAwait(false);
+            await JsonSerializer.SerializeAsync(c, entries, SerCtx.Default.DictionaryStringDCTokenCacheEntry).ConfigureAwait(false);
         }
         finally
         {

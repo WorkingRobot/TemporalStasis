@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using TemporalStasis.Structs;
 
@@ -14,7 +15,7 @@ public record struct IpcData
         Data = segment.Data[Unsafe.SizeOf<IpcHeader>()..];
     }
 
-    public readonly T Deserialize<T>() where T : struct
+    public readonly T Deserialize<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)] T>() where T : struct
     {
         ArgumentOutOfRangeException.ThrowIfNotEqual(Unsafe.SizeOf<T>(), Data.Length, nameof(T));
         return StructExtensions.ReadStruct<T>(Data);

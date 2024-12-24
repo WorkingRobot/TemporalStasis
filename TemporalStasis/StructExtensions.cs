@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -5,12 +6,12 @@ using System.Runtime.InteropServices;
 namespace TemporalStasis;
 
 public static class StructExtensions {
-    public static T ReadStruct<T>(this Stream stream) where T : struct {
+    public static T ReadStruct<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)] T>(this Stream stream) where T : struct {
         var buffer = stream.ReadBytes(Unsafe.SizeOf<T>());
         return buffer.ReadStruct<T>();
     }
     
-    public static T ReadStruct<T>(this byte[] data) where T : struct {
+    public static T ReadStruct<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)] T>(this byte[] data) where T : struct {
         var handle = GCHandle.Alloc(data, GCHandleType.Pinned);
         var @struct = Marshal.PtrToStructure<T>(handle.AddrOfPinnedObject());
         handle.Free();
@@ -18,7 +19,7 @@ public static class StructExtensions {
         return @struct;
     }
 
-    public static async Task<T> ReadStructAsync<T>(this Stream stream, CancellationToken token = default) where T : struct {
+    public static async Task<T> ReadStructAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)] T>(this Stream stream, CancellationToken token = default) where T : struct {
         var buffer = await stream.ReadBytesAsync(Unsafe.SizeOf<T>(), token);
         return buffer.ReadStruct<T>();
     }

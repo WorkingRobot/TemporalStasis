@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using TemporalStasis.Intercept;
@@ -24,9 +24,9 @@ public class LobbyProxy(
     public event IProxy.IpcPacketInterceptor? OnIpcServerboundPacket;
     public event IProxy.IpcPacketInterceptor? OnIpcClientboundPacket;
 
-    private Dictionary<int, LobbyProxyClient> clients = new();
+    private Dictionary<int, LobbyProxyClient> clients = [];
 
-    public ZoneProxy? ZoneProxy = null;
+    public ZoneProxy? ZoneProxy;
 
     public async Task SendRawPacketAsync(int id, RawInterceptedPacket packet, bool serverbound) {
         if (this.clients.TryGetValue(id, out var client)) await client.SendPacketAsync(packet, serverbound);
@@ -90,7 +90,7 @@ public class LobbyProxy(
                         this.OnIpcClientboundPacket?.Invoke(id, ref packet, ref dropped, ConnectionType.Lobby);
 
                         if (this.ZoneProxy is not null && packet.IpcHeader.Opcode == EnterWorldOpcode) {
-                            var packetPort = BitConverter.ToUInt16(packet.Data[EnterWorldPortOffset..]);
+                            var packetPort = BitConverter.ToUInt16(packet.Data.AsSpan()[EnterWorldPortOffset..]);
                             var packetHost = Encoding.UTF8.GetString(
                                 packet.Data[EnterWorldHostOffset..(EnterWorldHostOffset + EnterWorldHostSize)]);
                             this.ZoneProxy.NextHost = packetHost;
