@@ -9,9 +9,8 @@
     </PropertyGroup>
     
     <PropertyGroup>
-        <PublishSelfContained>true</PublishSelfContained>
-        <PublishTrimmed>true</PublishTrimmed>
         <PublishAot>true</PublishAot>
+        <OptimizationPreference>Speed</OptimizationPreference>
         <InvariantGlobalization>true</InvariantGlobalization>
     </PropertyGroup>
 
