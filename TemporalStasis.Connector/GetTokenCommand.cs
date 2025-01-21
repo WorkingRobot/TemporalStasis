@@ -1,6 +1,7 @@
 using DotMake.CommandLine;
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Web;
 using TemporalStasis.Connector.Login;
@@ -86,6 +87,7 @@ public class GetTokenCommand
         public ushort WorldId { get; set; }
         public uint DCToken { get; set; }
         public DateTime CreationDate { get; set; }
+        public byte[] VersionInfoHash { get; set; }
     }
 
     public async Task RunAsync()
@@ -183,7 +185,7 @@ public class GetTokenCommand
 
     private async Task ExecuteRunner(IPEndPoint endpoint, VersionInfo versionInfo, LoginInfo loginInfo, CancellationToken token)
     {
-        var dcTokenData = await GetDCTokenCacheEntryAsync(endpoint, token).ConfigureAwait(false);
+        var dcTokenData = await GetDCTokenCacheEntryAsync(endpoint, versionInfo, token).ConfigureAwait(false);
 
         if (!dcTokenData.HasValue)
         {
@@ -233,7 +235,7 @@ public class GetTokenCommand
                 _ = Task.Run(async () =>
                 {
                     var token = await runner.GetDCTravelToken(character).ConfigureAwait(false);
-                    await WriteDCTokenCacheEntryAsync(endpoint, character.CharacterId, character.WorldId, token, cts.Token).ConfigureAwait(false);
+                    await WriteDCTokenCacheEntryAsync(endpoint, versionInfo, character.CharacterId, character.WorldId, token, cts.Token).ConfigureAwait(false);
 
                     dcTokenData = (character.CharacterId, character.WorldId, token);
                 }).ContinueWith(t => cts.Cancel());
@@ -331,10 +333,13 @@ public class GetTokenCommand
     }
 
     private SemaphoreSlim DCTokenCacheLock { get; } = new(1);
-    private async Task<(ulong CharacterId, ushort WorldId, uint DCToken)?> GetDCTokenCacheEntryAsync(IPEndPoint endpoint, CancellationToken token)
+    private async Task<(ulong CharacterId, ushort WorldId, uint DCToken)?> GetDCTokenCacheEntryAsync(IPEndPoint endpoint, VersionInfo versionInfo, CancellationToken token)
     {
         if (!(DCTokenCache?.Exists ?? false))
             return null;
+        
+        var versionHash = SHA1.HashData(JsonSerializer.SerializeToUtf8Bytes(versionInfo, SerCtx.Default.VersionInfo));
+
         await DCTokenCacheLock.WaitAsync(token).ConfigureAwait(false);
         try
         {
@@ -343,6 +348,8 @@ public class GetTokenCommand
             if (entries == null)
                 return null;
             if (!entries.TryGetValue(endpoint.ToString(), out var entry))
+                return null;
+            if (!entry.VersionInfoHash.AsSpan().SequenceEqual(versionHash))
                 return null;
             if (entry.CreationDate + DCTokenTTL <= DateTime.UtcNow)
                 return null;
@@ -354,16 +361,19 @@ public class GetTokenCommand
         }
     }
 
-    private async Task WriteDCTokenCacheEntryAsync(IPEndPoint endpoint, ulong characterId, ushort worldId, uint dcToken, CancellationToken token)
+    private async Task WriteDCTokenCacheEntryAsync(IPEndPoint endpoint, VersionInfo versionInfo, ulong characterId, ushort worldId, uint dcToken, CancellationToken token)
     {
         if (DCTokenCache == null)
             return;
+
+        var versionHash = SHA1.HashData(JsonSerializer.SerializeToUtf8Bytes(versionInfo, SerCtx.Default.VersionInfo));
+
         await DCTokenCacheLock.WaitAsync(token).ConfigureAwait(false);
         try
         {
             using var c = DCTokenCache.Open(FileMode.OpenOrCreate, FileAccess.ReadWrite);
             var entries = c.Length == 0 ? [] : await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringDCTokenCacheEntry, cancellationToken: token).ConfigureAwait(false) ?? [];
-            entries[endpoint.ToString()] = new() { CharacterId = characterId, WorldId = worldId, DCToken = dcToken, CreationDate = DateTime.UtcNow };
+            entries[endpoint.ToString()] = new() { CharacterId = characterId, WorldId = worldId, DCToken = dcToken, CreationDate = DateTime.UtcNow, VersionInfoHash = versionHash };
             c.SetLength(0);
             await JsonSerializer.SerializeAsync(c, entries, SerCtx.Default.DictionaryStringDCTokenCacheEntry).ConfigureAwait(false);
         }
