@@ -65,18 +65,18 @@ internal sealed class LoginClient : IDisposable
         if (str.Contains("window.external.user(\"restartup\");"))
             throw new Exception("No Steam account is linked");
 
-        return new(uri.Uri, RetrieveToken(str, "name=\"_STORED_\" value=\"", "\"").ToString());
+        return new(uri.Uri, ScrapeData(str, "name=\"_STORED_\" value=\"", "\"").ToString());
     }
 
-    private static ReadOnlySpan<char> RetrieveToken(ReadOnlySpan<char> span, ReadOnlySpan<char> begin, ReadOnlySpan<char> end)
+    private static ReadOnlySpan<char> ScrapeData(ReadOnlySpan<char> span, ReadOnlySpan<char> begin, ReadOnlySpan<char> end)
     {
         var beginPos = span.IndexOf(begin);
-        ArgumentOutOfRangeException.ThrowIfNegative(beginPos, nameof(span));
+        ArgumentOutOfRangeException.ThrowIfNegative(beginPos);
 
         span = span[(beginPos + begin.Length)..];
 
         var endPos = span.IndexOf(end);
-        ArgumentOutOfRangeException.ThrowIfNegative(endPos, nameof(span));
+        ArgumentOutOfRangeException.ThrowIfNegative(endPos);
 
         return span[..endPos];
     }
@@ -104,9 +104,13 @@ internal sealed class LoginClient : IDisposable
         resp.EnsureSuccessStatusCode();
         var str = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
 
-        var prms = RetrieveToken(str, "window.external.user(\"login=auth,ok,", "\");").ToString().Split(',');
-
-        return new(prms[1], int.Parse(prms[5]), prms[3] != "0", prms[9] != "0", int.Parse(prms[13]));
+        var prms = ScrapeData(str, "window.external.user(\"login=auth,", "\");").ToString().Split(',');
+        if (prms[0] == "ok")
+            return new(prms[2], int.Parse(prms[6]), prms[4] != "0", prms[10] != "0", int.Parse(prms[14]));
+        else if (prms[1] == "err")
+            throw new InvalidOperationException(prms[2]);
+        else
+            throw new InvalidOperationException($"Unknown error during login: {string.Join(',', prms)}");
     }
 
     public async Task<string> GetUniqueIdAsync(LoginResult loginData, string gameVersion, string versionReport)
