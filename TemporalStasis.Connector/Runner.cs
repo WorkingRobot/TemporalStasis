@@ -197,6 +197,13 @@ internal sealed class Runner : IDisposable
             var c => $"Unknown ({c})"
         };
         Log.Debug($"Received IPC {opName}");
+
+        if (ipc.Header.Opcode == 2 && State >= WaitingState.WaitingForLoginReply)
+        {
+            var data = ipc.Deserialize<LoginErrorPacket>();
+            throw new InvalidDataException($"Login error; Code: {data.ErrorCode}; Param: {data.ErrorParam}; Row: {data.ErrorSheetRow}; {data.Message}");
+        }
+        else if (ipc.Header.Opcode == 12 && State >= WaitingState.WaitingForLoginReply)
         {
             var data = ipc.Deserialize<LoginReplyPacket>();
             ServiceAccounts!.AddRange(data.Accounts[..data.Count]);

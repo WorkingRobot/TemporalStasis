@@ -147,61 +147,75 @@ public class GetTokenCommand
             return new IPEndPoint(address, port);
         })).ConfigureAwait(false);
 
-        LoginInfo? loginInfoValue = null;
-
-        if (!string.IsNullOrEmpty(UID) && MaxExpansion.HasValue)
-        {
-            loginInfoValue = new()
-            {
-                UniqueId = UID,
-                IsSteam = false,
-                MaxExpansion = MaxExpansion.Value
-            };
-            await WriteUIDCacheEntryAsync(loginInfoValue.Value, cts.Token).ConfigureAwait(false);
-        }
-
-        if (!loginInfoValue.HasValue)
-            loginInfoValue = await GetUIDCacheEntryAsync(cts.Token).ConfigureAwait(false);
-
-        if (!loginInfoValue.HasValue && !string.IsNullOrEmpty(Username) && !string.IsNullOrEmpty(Password))
-        {
-            using var loginClient = new LoginClient();
-            var loginToken = await loginClient.GetLoginTokenAsync(IsFreeTrial).ConfigureAwait(false);
-            var loginData = await loginClient.LoginOAuth(loginToken, Username, Password, null).ConfigureAwait(false);
-            var report = LoginClient.GenerateVersionReport(versionInfo.BootVersion, versionInfo.BootHashes, versionInfo.ExVersions.AsSpan()[..loginData.MaxExpansion]);
-            var uniqueId = await loginClient.GetUniqueIdAsync(loginData, versionInfo.GameVersion, report).ConfigureAwait(false);
-            loginInfoValue = new()
-            {
-                UniqueId = uniqueId,
-                IsSteam = false,
-                MaxExpansion = loginData.MaxExpansion
-            };
-            await WriteUIDCacheEntryAsync(loginInfoValue.Value, cts.Token).ConfigureAwait(false);
-        }
-
-        var loginInfo = loginInfoValue ??
-            throw new ArgumentException("Either username/password or uid/max expansion must be specified");
-
         if (OnlyUIDData)
         {
+            var loginInfo = await GetLoginInfoAsync(versionInfo, useCache: true, cts.Token);
+
             Log.Output(loginInfo.UniqueId);
             Log.Output(loginInfo.MaxExpansion);
             return;
         }
 
-        if (Verbose)
-        {
-            Log.Verbose($"UID: {loginInfo.UniqueId}");
-            Log.Verbose();
-        }
-
-        var runnerTasks = endpoints.Select(e => ExecuteRunner(e, versionInfo, loginInfo, useCache: true, cts.Token));
+        var runnerTasks = endpoints.Select(e => ExecuteRunner(e, versionInfo, useUidCache: true, useTokenCache: true, cts.Token));
         await Task.WhenAll(runnerTasks).ConfigureAwait(false);
     }
 
-    private async Task ExecuteRunner(IPEndPoint endpoint, VersionInfo versionInfo, LoginInfo loginInfo, bool useCache, CancellationToken token)
+    private SemaphoreSlim LoginInfoLock { get; } = new(1);
+    private async Task<LoginInfo> GetLoginInfoAsync(VersionInfo versionInfo, bool useCache, CancellationToken token)
     {
-        var dcTokenData = useCache ? await GetDCTokenCacheEntryAsync(endpoint, versionInfo, token).ConfigureAwait(false) : null;
+        await LoginInfoLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (!string.IsNullOrEmpty(UID) && MaxExpansion.HasValue)
+            {
+                var ret = new LoginInfo()
+                {
+                    UniqueId = UID,
+                    IsSteam = false,
+                    MaxExpansion = MaxExpansion.Value
+                };
+                await WriteUIDCacheEntryAsync(ret, token).ConfigureAwait(false);
+                return ret;
+            }
+
+            if (useCache)
+            {
+                var ret = await GetUIDCacheEntryAsync(token).ConfigureAwait(false);
+                if (ret.HasValue)
+                    return ret.Value;
+            }
+
+            if (!string.IsNullOrEmpty(Username) && !string.IsNullOrEmpty(Password))
+            {
+                using var loginClient = new LoginClient();
+                var loginToken = await loginClient.GetLoginTokenAsync(IsFreeTrial).ConfigureAwait(false);
+                var loginData = await loginClient.LoginOAuth(loginToken, Username, Password, null).ConfigureAwait(false);
+                var report = LoginClient.GenerateVersionReport(versionInfo.BootVersion, versionInfo.BootHashes, versionInfo.ExVersions.AsSpan()[..loginData.MaxExpansion]);
+                var uniqueId = await loginClient.GetUniqueIdAsync(loginData, versionInfo.GameVersion, report).ConfigureAwait(false);
+                var ret = new LoginInfo()
+                {
+                    UniqueId = uniqueId,
+                    IsSteam = false,
+                    MaxExpansion = loginData.MaxExpansion
+                };
+                await WriteUIDCacheEntryAsync(ret, token).ConfigureAwait(false);
+                return ret;
+            }
+        }
+        finally
+        {
+            LoginInfoLock.Release();
+        }
+
+        throw new ArgumentException("Either username/password or uid/max expansion must be specified");
+    }
+
+    private async Task ExecuteRunner(IPEndPoint endpoint, VersionInfo versionInfo, bool useUidCache, bool useTokenCache, CancellationToken token)
+    {
+        var loginInfo = await GetLoginInfoAsync(versionInfo, useUidCache, token).ConfigureAwait(false);
+        Log.Verbose($"UID: {loginInfo.UniqueId}");
+
+        var dcTokenData = useTokenCache ? await GetDCTokenCacheEntryAsync(endpoint, versionInfo, token).ConfigureAwait(false) : null;
 
         if (!dcTokenData.HasValue)
         {
@@ -209,38 +223,35 @@ public class GetTokenCommand
 
             using var runner = new Runner(endpoint, versionInfo, loginInfo, cts.Token);
 
-            if (Verbose)
+            runner.OnLogin += () =>
             {
-                runner.OnLogin += () =>
+                Log.Verbose("Worlds:");
+                foreach (var world in runner.Worlds)
+                    Log.Verbose($"World {world.Id}: {world.Name}");
+                Log.Verbose();
+
+                Log.Verbose("FFXI Characters:");
+                foreach (var character in runner.XiCharacters)
+                    Log.Verbose($"XiChar {character.Id:X8}: {character.Name} (World {character.WorldParam})");
+                Log.Verbose();
+
+                Log.Verbose("Retainers:");
+                foreach (var retainer in runner.Retainers)
+                    Log.Verbose($"Retainer {retainer.Id:X16} (Owner {retainer.OwnerId:X16}): {retainer.Name}");
+                Log.Verbose();
+
+                Log.Verbose("Characters:");
+                foreach (var character in runner.Characters)
                 {
-                    Log.Verbose("Worlds:");
-                    foreach (var world in runner.Worlds)
-                        Log.Verbose($"World {world.Id}: {world.Name}");
-                    Log.Verbose();
+                    Log.Verbose($"Character {character.CharacterId:X16} (Player {character.PlayerId:X16}): {character.Name}");
+                    Log.Verbose($"  At {character.WorldName} ({character.WorldId})");
+                    Log.Verbose($"  Home {character.HomeWorldName} ({character.HomeWorldId})");
+                    Log.Verbose($"  JSON: {character.Json}");
+                }
+                Log.Verbose();
 
-                    Log.Verbose("FFXI Characters:");
-                    foreach (var character in runner.XiCharacters)
-                        Log.Verbose($"XiChar {character.Id:X8}: {character.Name} (World {character.WorldParam})");
-                    Log.Verbose();
-
-                    Log.Verbose("Retainers:");
-                    foreach (var retainer in runner.Retainers)
-                        Log.Verbose($"Retainer {retainer.Id:X16} (Owner {retainer.OwnerId:X16}): {retainer.Name}");
-                    Log.Verbose();
-
-                    Log.Verbose("Characters:");
-                    foreach (var character in runner.Characters)
-                    {
-                        Log.Verbose($"Character {character.CharacterId:X16} (Player {character.PlayerId:X16}): {character.Name}");
-                        Log.Verbose($"  At {character.WorldName} ({character.WorldId})");
-                        Log.Verbose($"  Home {character.HomeWorldName} ({character.HomeWorldId})");
-                        Log.Verbose($"  JSON: {character.Json}");
-                    }
-                    Log.Verbose();
-
-                    return Task.CompletedTask;
-                };
-            }
+                return Task.CompletedTask;
+            };
 
             runner.OnLogin += () =>
             {
@@ -263,6 +274,16 @@ public class GetTokenCommand
             {
                 await runner.RunAsync().ConfigureAwait(false);
             }
+            catch (InvalidDataException e)
+            {
+                runner.Dispose();
+
+                Log.Warn($"Login error, retrying without cache");
+                Log.Warn(e.Message);
+
+                await ExecuteRunner(endpoint, versionInfo, useUidCache: false, useTokenCache: false, token).ConfigureAwait(false);
+                return;
+            }
             catch (Exception)
             {
                 if (!cts.IsCancellationRequested)
@@ -282,40 +303,30 @@ public class GetTokenCommand
             return;
         }
 
-        if (Verbose)
-        {
-            Log.Verbose($"DC Travel Token: {dcToken:X8}");
-            Log.Verbose($"World Id: {worldId}");
-            Log.Verbose($"Character Id: {characterId:X16}");
-        }
+        Log.Verbose($"DC Travel Token: {dcToken:X8}");
+        Log.Verbose($"World Id: {worldId}");
+        Log.Verbose($"Character Id: {characterId:X16}");
 
         var (errorCode, resp) = await ExecuteDCToken(dcToken, worldId, characterId, token).ConfigureAwait(false);
         if (!errorCode.HasValue)
         {
-            if (Verbose)
-            {
-                Log.Verbose();
-                Log.Verbose("Travel Response:");
-            }
+            Log.Verbose();
+            Log.Verbose("Travel Response:");
             Log.Output(resp);
         }
         else
         {
-            if (useCache && errorCode == 101) // PARAM_ERROR
+            if (useTokenCache && errorCode == 101) // PARAM_ERROR
             {
-                if (Verbose)
-                    Log.Verbose();
+                Log.Verbose();
                 Log.Warn("Recieved PARAM_ERROR, retrying without cache");
 
-                await ExecuteRunner(endpoint, versionInfo, loginInfo, useCache: false, token).ConfigureAwait(false);
+                await ExecuteRunner(endpoint, versionInfo, useUidCache, useTokenCache: false, token).ConfigureAwait(false);
                 return;
             }
 
-            if (Verbose)
-            {
-                Log.Verbose();
-                Log.Verbose("Travel Error:");
-            }
+            Log.Verbose();
+            Log.Verbose("Travel Error:");
             Log.Output(resp);
         }
     }
@@ -353,8 +364,20 @@ public class GetTokenCommand
     {
         if (!(UIDCache?.Exists ?? false))
             return null;
+
         using var c = UIDCache.OpenRead();
-        var entries = c.Length == 0 ? null : await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false);
+        if (c.Length == 0)
+            return null;
+        Dictionary<string, UIDCacheEntry>? entries;
+        try
+        {
+            entries = await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false);
+        }
+        catch (JsonException e)
+        {
+            Log.Warn($"Failed to parse UIDCache while reading: {e.Message}");
+            return null;
+        }
         if (entries == null)
             return null;
         if (!entries.TryGetValue(UIDCacheName, out var entry))
@@ -368,8 +391,20 @@ public class GetTokenCommand
     {
         if (UIDCache == null)
             return;
+
         using var c = UIDCache.Open(FileMode.OpenOrCreate, FileAccess.ReadWrite);
-        var entries = c.Length == 0 ? [] : await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false) ?? [];
+        Dictionary<string, UIDCacheEntry> entries = [];
+        if (c.Length != 0)
+        {
+            try
+            {
+                entries = await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false) ?? [];
+            }
+            catch (JsonException e)
+            {
+                Log.Warn($"Failed to parse UIDCache while writing: {e.Message}");
+            }
+        }
         entries[UIDCacheName] = new() { LoginInfo = loginInfo, CreationDate = DateTime.UtcNow };
         c.SetLength(0);
         await JsonSerializer.SerializeAsync(c, entries, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false);
@@ -387,7 +422,18 @@ public class GetTokenCommand
         try
         {
             using var c = DCTokenCache.OpenRead();
-            var entries = c.Length == 0 ? null : await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringDCTokenCacheEntry, cancellationToken: token).ConfigureAwait(false);
+            if (c.Length == 0)
+                return null;
+            Dictionary<string, DCTokenCacheEntry>? entries;
+            try
+            {
+                entries = await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringDCTokenCacheEntry, cancellationToken: token).ConfigureAwait(false);
+            }
+            catch (JsonException e)
+            {
+                Log.Warn($"Failed to parse DCTokenCache while reading: {e.Message}");
+                return null;
+            }
             if (entries == null)
                 return null;
             if (!entries.TryGetValue(endpoint.ToString(), out var entry))
@@ -415,7 +461,18 @@ public class GetTokenCommand
         try
         {
             using var c = DCTokenCache.Open(FileMode.OpenOrCreate, FileAccess.ReadWrite);
-            var entries = c.Length == 0 ? [] : await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringDCTokenCacheEntry, cancellationToken: token).ConfigureAwait(false) ?? [];
+            Dictionary<string, DCTokenCacheEntry> entries = [];
+            if (c.Length != 0)
+            {
+                try
+                {
+                    entries = await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringDCTokenCacheEntry, cancellationToken: token).ConfigureAwait(false) ?? [];
+                }
+                catch (JsonException e)
+                {
+                    Log.Warn($"Failed to parse DCTokenCache while writing: {e.Message}");
+                }
+            }
             entries[endpoint.ToString()] = new() { CharacterId = characterId, WorldId = worldId, DCToken = dcToken, CreationDate = DateTime.UtcNow, VersionInfoHash = versionHash };
             c.SetLength(0);
             await JsonSerializer.SerializeAsync(c, entries, SerCtx.Default.DictionaryStringDCTokenCacheEntry).ConfigureAwait(false);
