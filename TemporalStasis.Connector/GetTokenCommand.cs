@@ -12,8 +12,18 @@ namespace TemporalStasis.Connector;
 [CliCommand(Description = "Get a DC travel token")]
 public class GetTokenCommand
 {
-    private static Task<int> Main(string[] args) =>
-        Cli.RunAsync<GetTokenCommand>(args);
+    private static async Task<int> Main(string[] args)
+    {
+        try
+        {
+            return await Cli.RunAsync<GetTokenCommand>(args).ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            Log.Error(e);
+            return 1;
+        }
+    }
 
     [CliArgument(Required = true, Arity = CliArgumentArity.OneOrMore, Description = "The lobby endpoints to access. Accepts DNS names, IPs, and ports")]
     public required string[] LobbyHosts { get; set; }
@@ -75,6 +85,9 @@ public class GetTokenCommand
     [CliOption]
     public bool Verbose { get; set; } = false;
 
+    [CliOption(Description = "Implies --verbose")]
+    public bool Debug { get; set; } = false;
+
     public struct UIDCacheEntry
     {
         public LoginInfo LoginInfo { get; set; }
@@ -92,6 +105,9 @@ public class GetTokenCommand
 
     public async Task RunAsync()
     {
+        Log.IsDebugEnabled = Debug;
+        Log.IsVerboseEnabled = Debug || Verbose;
+
         var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (sender, eventArgs) =>
         {

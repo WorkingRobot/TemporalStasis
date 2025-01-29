@@ -9,7 +9,8 @@ internal sealed class Runner : IDisposable
 {
     public event Func<Task> OnLogin
     {
-        add {
+        add
+        {
             lock (onLoginLock)
                 onLogin.Add(value);
         }
@@ -163,6 +164,7 @@ internal sealed class Runner : IDisposable
                 }
             ]
         });
+        Log.Debug("Sent CharaMake DCTravelToken");
         return await completionSource.Task.ConfigureAwait(false);
     }
 
@@ -183,8 +185,18 @@ internal sealed class Runner : IDisposable
         // Send 11 CharaMake
         // Receive 14 CharaMakeReply
 
-
-        if (ipc.Header.Opcode == 12 && State >= WaitingState.WaitingForLoginReply)
+        var opName = ipc.Header.Opcode switch
+        {
+            2 => "LoginError",
+            12 => "LoginReply",
+            21 => "DistWorldInfo",
+            22 => "XiCharacterInfo",
+            23 => "DistRetainerInfo",
+            13 => "ServiceLoginReply",
+            14 => "CharaMakeReply",
+            var c => $"Unknown ({c})"
+        };
+        Log.Debug($"Received IPC {opName}");
         {
             var data = ipc.Deserialize<LoginReplyPacket>();
             ServiceAccounts!.AddRange(data.Accounts[..data.Count]);
@@ -202,18 +214,19 @@ internal sealed class Runner : IDisposable
                     SendTimestamp = true,
                     Segments = [
                         new SendablePacketSegment()
-                {
-                    SegmentType = SegmentType.Ipc,
-                    SourceActor = Fingerprint!.Value,
-                    TargetActor = Fingerprint!.Value,
-                    Payload = new SendableIpcPacket()
-                    {
-                        Opcode = 3,
-                        Payload = new ServiceLoginPacket(++RequestNumber, accountIdx, ServiceAccounts[accountIdx].Id).Generate()
-                    }.Generate(Client.Brokefish!)
-                }
+                        {
+                            SegmentType = SegmentType.Ipc,
+                            SourceActor = Fingerprint!.Value,
+                            TargetActor = Fingerprint!.Value,
+                            Payload = new SendableIpcPacket()
+                            {
+                                Opcode = 3,
+                                Payload = new ServiceLoginPacket(++RequestNumber, accountIdx, ServiceAccounts[accountIdx].Id).Generate()
+                            }.Generate(Client.Brokefish!)
+                        }
                     ]
                 });
+                Log.Debug("Sent ServiceLogin");
                 State = WaitingState.WaitingForDistInfo;
                 WorldsList = [];
                 XiCharactersList = [];
@@ -256,6 +269,8 @@ internal sealed class Runner : IDisposable
 
     private async Task OnNonIpc(PacketHeader header, PacketSegment segment)
     {
+        Log.Debug($"Received non-IPC {segment.Header.SegmentType}");
+
         if (segment.Header.SegmentType == SegmentType.EncryptedData)
         {
             var pkt = segment.Deserialize<EncryptionDataPacket>();
@@ -283,6 +298,7 @@ internal sealed class Runner : IDisposable
                     }
                 ]
             });
+            Log.Debug("Sent LoginEx");
             State = WaitingState.WaitingForLoginReply;
             ServiceAccounts = [];
 
@@ -292,7 +308,7 @@ internal sealed class Runner : IDisposable
             segment.Header.SegmentType == SegmentType.KeepAlive &&
             State == WaitingState.WaitingForPing)
         {
-            //Console.WriteLine($"Initializing encryption {Convert.ToHexString(segment.Data)}");
+            Log.Debug($"Initializing encryption {Convert.ToHexString(segment.Data)}");
             await Client.InitializeEncryption(VersionInfo.BlowfishPhrase, (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds(), VersionInfo.BlowfishVersion).ConfigureAwait(false);
 
             _ = Task.Run(async () =>

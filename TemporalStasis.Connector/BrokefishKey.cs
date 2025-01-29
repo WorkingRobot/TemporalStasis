@@ -37,7 +37,7 @@ public unsafe struct BrokefishKey
         using var s = new MemoryStream();
         s.WriteStruct(this);
         var hash = MD5.HashData(s.ToArray());
-        //Console.WriteLine($"KEY: {Convert.ToHexString(hash)}");
+        Log.Debug($"KEY: {Convert.ToHexString(hash)}");
         return new(hash);
     }
 }
