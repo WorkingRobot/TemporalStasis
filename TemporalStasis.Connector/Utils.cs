@@ -34,6 +34,7 @@ public readonly record struct FileReport(string FileName, long FileSize, byte[] 
 [JsonSerializable(typeof(VersionInfo))]
 [JsonSerializable(typeof(Dictionary<string, UIDCacheEntry>))]
 [JsonSerializable(typeof(Dictionary<string, DCTokenCacheEntry>))]
+[JsonSerializable(typeof(DCTravelResponse))]
 public partial class ConnectorSerializerContext : JsonSerializerContext
 {
 
