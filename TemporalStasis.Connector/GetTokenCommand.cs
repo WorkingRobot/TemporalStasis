@@ -69,7 +69,7 @@ public class GetTokenCommand
 
     [CliOption(Name = "--only-uid-data")]
     public bool OnlyUIDData { get; set; } = false;
-    
+
     // Misc
 
     [CliOption]
@@ -168,24 +168,24 @@ public class GetTokenCommand
 
         if (OnlyUIDData)
         {
-            Console.WriteLine(loginInfo.UniqueId);
-            Console.WriteLine(loginInfo.MaxExpansion);
+            Log.Output(loginInfo.UniqueId);
+            Log.Output(loginInfo.MaxExpansion);
             return;
         }
 
         if (Verbose)
         {
-            Console.WriteLine($"UID: {loginInfo.UniqueId}");
-            Console.WriteLine();
+            Log.Verbose($"UID: {loginInfo.UniqueId}");
+            Log.Verbose();
         }
 
-        var runnerTasks = endpoints.Select(e => ExecuteRunner(e, versionInfo, loginInfo, cts.Token));
+        var runnerTasks = endpoints.Select(e => ExecuteRunner(e, versionInfo, loginInfo, useCache: true, cts.Token));
         await Task.WhenAll(runnerTasks).ConfigureAwait(false);
     }
 
-    private async Task ExecuteRunner(IPEndPoint endpoint, VersionInfo versionInfo, LoginInfo loginInfo, CancellationToken token)
+    private async Task ExecuteRunner(IPEndPoint endpoint, VersionInfo versionInfo, LoginInfo loginInfo, bool useCache, CancellationToken token)
     {
-        var dcTokenData = await GetDCTokenCacheEntryAsync(endpoint, versionInfo, token).ConfigureAwait(false);
+        var dcTokenData = useCache ? await GetDCTokenCacheEntryAsync(endpoint, versionInfo, token).ConfigureAwait(false) : null;
 
         if (!dcTokenData.HasValue)
         {
@@ -197,30 +197,30 @@ public class GetTokenCommand
             {
                 runner.OnLogin += () =>
                 {
-                    Console.WriteLine("Worlds:");
+                    Log.Verbose("Worlds:");
                     foreach (var world in runner.Worlds)
-                        Console.WriteLine($"World {world.Id}: {world.Name}");
-                    Console.WriteLine();
+                        Log.Verbose($"World {world.Id}: {world.Name}");
+                    Log.Verbose();
 
-                    Console.WriteLine("FFXI Characters:");
+                    Log.Verbose("FFXI Characters:");
                     foreach (var character in runner.XiCharacters)
-                        Console.WriteLine($"XiChar {character.Id:X8}: {character.Name} (World {character.WorldParam})");
-                    Console.WriteLine();
+                        Log.Verbose($"XiChar {character.Id:X8}: {character.Name} (World {character.WorldParam})");
+                    Log.Verbose();
 
-                    Console.WriteLine("Retainers:");
+                    Log.Verbose("Retainers:");
                     foreach (var retainer in runner.Retainers)
-                        Console.WriteLine($"Retainer {retainer.Id:X16} (Owner {retainer.OwnerId:X16}): {retainer.Name}");
-                    Console.WriteLine();
+                        Log.Verbose($"Retainer {retainer.Id:X16} (Owner {retainer.OwnerId:X16}): {retainer.Name}");
+                    Log.Verbose();
 
-                    Console.WriteLine("Characters:");
+                    Log.Verbose("Characters:");
                     foreach (var character in runner.Characters)
                     {
-                        Console.WriteLine($"Character {character.CharacterId:X16} (Player {character.PlayerId:X16}): {character.Name}");
-                        Console.WriteLine($"  At {character.WorldName} ({character.WorldId})");
-                        Console.WriteLine($"  Home {character.HomeWorldName} ({character.HomeWorldId})");
-                        Console.WriteLine($"  JSON: {character.Json}");
+                        Log.Verbose($"Character {character.CharacterId:X16} (Player {character.PlayerId:X16}): {character.Name}");
+                        Log.Verbose($"  At {character.WorldName} ({character.WorldId})");
+                        Log.Verbose($"  Home {character.HomeWorldName} ({character.HomeWorldId})");
+                        Log.Verbose($"  JSON: {character.Json}");
                     }
-                    Console.WriteLine();
+                    Log.Verbose();
 
                     return Task.CompletedTask;
                 };
@@ -260,23 +260,51 @@ public class GetTokenCommand
 
         if (OnlyDCToken)
         {
-            Console.WriteLine(dcToken);
-            Console.WriteLine(worldId);
-            Console.WriteLine(characterId);
+            Log.Output(dcToken);
+            Log.Output(worldId);
+            Log.Output(characterId);
             return;
         }
 
         if (Verbose)
         {
-            Console.WriteLine($"DC Travel Token: {dcToken:X8}");
-            Console.WriteLine($"World Id: {worldId}");
-            Console.WriteLine($"Character Id: {characterId:X16}");
+            Log.Verbose($"DC Travel Token: {dcToken:X8}");
+            Log.Verbose($"World Id: {worldId}");
+            Log.Verbose($"Character Id: {characterId:X16}");
         }
 
-        await ExecuteDCToken(dcToken, worldId, characterId, token).ConfigureAwait(false);
+        var (errorCode, resp) = await ExecuteDCToken(dcToken, worldId, characterId, token).ConfigureAwait(false);
+        if (!errorCode.HasValue)
+        {
+            if (Verbose)
+            {
+                Log.Verbose();
+                Log.Verbose("Travel Response:");
+            }
+            Log.Output(resp);
+        }
+        else
+        {
+            if (useCache && errorCode == 101) // PARAM_ERROR
+            {
+                if (Verbose)
+                    Log.Verbose();
+                Log.Warn("Recieved PARAM_ERROR, retrying without cache");
+
+                await ExecuteRunner(endpoint, versionInfo, loginInfo, useCache: false, token).ConfigureAwait(false);
+                return;
+            }
+
+            if (Verbose)
+            {
+                Log.Verbose();
+                Log.Verbose("Travel Error:");
+            }
+            Log.Output(resp);
+        }
     }
 
-    private async Task ExecuteDCToken(uint dcToken, ushort worldId, ulong characterId, CancellationToken token)
+    private static async Task<(int?, string)> ExecuteDCToken(uint dcToken, ushort worldId, ulong characterId, CancellationToken token)
     {
         using var http = new HttpClient();
         http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "FFXIV CLIENT");
@@ -298,12 +326,11 @@ public class GetTokenCommand
         request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json ; charset=UTF-8");
 
         var ret = (await http.SendAsync(request, token).ConfigureAwait(false)).EnsureSuccessStatusCode();
-        if (Verbose)
-        {
-            Console.WriteLine();
-            Console.WriteLine("Travel Response:");
-        }
-        Console.WriteLine(await ret.Content.ReadAsStringAsync(token).ConfigureAwait(false));
+        var resp = await ret.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+        var json_resp = JsonSerializer.Deserialize(resp, SerCtx.Default.DCTravelResponse);
+        if (json_resp.Error != null)
+            return (int.Parse(json_resp.Result.ErrCode), resp);
+        return (null, resp);
     }
 
     private async Task<LoginInfo?> GetUIDCacheEntryAsync(CancellationToken token)
@@ -337,7 +364,7 @@ public class GetTokenCommand
     {
         if (!(DCTokenCache?.Exists ?? false))
             return null;
-        
+
         var versionHash = SHA1.HashData(JsonSerializer.SerializeToUtf8Bytes(versionInfo, SerCtx.Default.VersionInfo));
 
         await DCTokenCacheLock.WaitAsync(token).ConfigureAwait(false);
