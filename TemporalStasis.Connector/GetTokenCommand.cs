@@ -168,6 +168,7 @@ public class GetTokenCommand
         {
             if (!string.IsNullOrEmpty(UID) && MaxExpansion.HasValue)
             {
+                Log.Verbose("Using explicit UID");
                 var ret = new LoginInfo()
                 {
                     UniqueId = UID,
@@ -180,13 +181,18 @@ public class GetTokenCommand
 
             if (useCache)
             {
+                Log.Verbose("Checking for UID");
                 var ret = await GetUIDCacheEntryAsync(token).ConfigureAwait(false);
+
                 if (ret.HasValue)
                     return ret.Value;
             }
+            else
+                Log.Verbose("Skipping UID cache");
 
             if (!string.IsNullOrEmpty(Username) && !string.IsNullOrEmpty(Password))
             {
+                Log.Verbose("Logging in with username/password");
                 using var loginClient = new LoginClient();
                 var loginToken = await loginClient.GetLoginTokenAsync(IsFreeTrial).ConfigureAwait(false);
                 var loginData = await loginClient.LoginOAuth(loginToken, Username, Password, null).ConfigureAwait(false);
@@ -274,15 +280,17 @@ public class GetTokenCommand
             {
                 await runner.RunAsync().ConfigureAwait(false);
             }
-            catch (InvalidDataException e)
+            catch (LoginErrorException e)
             {
-                runner.Dispose();
+                if (useUidCache && e.ErrorCode == 5006)
+                {
+                    Log.Warn($"Login error, retrying without cache");
+                    Log.Warn(e.Message);
 
-                Log.Warn($"Login error, retrying without cache");
-                Log.Warn(e.Message);
-
-                await ExecuteRunner(endpoint, versionInfo, useUidCache: false, useTokenCache: false, token).ConfigureAwait(false);
-                return;
+                    await ExecuteRunner(endpoint, versionInfo, useUidCache: false, useTokenCache: false, token).ConfigureAwait(false);
+                    return;
+                }
+                throw;
             }
             catch (Exception)
             {
