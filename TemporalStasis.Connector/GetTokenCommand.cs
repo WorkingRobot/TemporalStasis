@@ -368,26 +368,29 @@ public class GetTokenCommand
         return (null, resp);
     }
 
+
+    private static Dictionary<string, UIDCacheEntry> BackupUIDCache = [];
     private async Task<LoginInfo?> GetUIDCacheEntryAsync(CancellationToken token)
     {
-        if (!(UIDCache?.Exists ?? false))
-            return null;
+        Dictionary<string, UIDCacheEntry> entries;
 
-        using var c = UIDCache.OpenRead();
-        if (c.Length == 0)
-            return null;
-        Dictionary<string, UIDCacheEntry>? entries;
-        try
+        if (!(UIDCache?.Exists ?? false))
+            entries = BackupUIDCache;
+        else
         {
-            entries = await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false);
+            using var c = UIDCache.OpenRead();
+            if (c.Length == 0)
+                return null;
+            try
+            {
+                entries = await JsonSerializer.DeserializeAsync(c, SerCtx.Default.DictionaryStringUIDCacheEntry, cancellationToken: token).ConfigureAwait(false) ?? [];
+            }
+            catch (JsonException e)
+            {
+                Log.Warn($"Failed to parse UIDCache while reading: {e.Message}");
+                return null;
+            }
         }
-        catch (JsonException e)
-        {
-            Log.Warn($"Failed to parse UIDCache while reading: {e.Message}");
-            return null;
-        }
-        if (entries == null)
-            return null;
         if (!entries.TryGetValue(UIDCacheName, out var entry))
             return null;
         if (entry.CreationDate + UIDTTL <= DateTime.UtcNow)
@@ -398,7 +401,10 @@ public class GetTokenCommand
     private async Task WriteUIDCacheEntryAsync(LoginInfo loginInfo, CancellationToken token)
     {
         if (UIDCache == null)
+        {
+            BackupUIDCache[UIDCacheName] = new() { LoginInfo = loginInfo, CreationDate = DateTime.UtcNow };
             return;
+        }
 
         using var c = UIDCache.Open(FileMode.OpenOrCreate, FileAccess.ReadWrite);
         Dictionary<string, UIDCacheEntry> entries = [];
